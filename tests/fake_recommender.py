@@ -12,10 +12,11 @@ import sys
 import time
 from pathlib import Path
 
+from locked_append import append_line
+
 payload = json.load(sys.stdin)
 if os.environ.get("FAKE_REC_SEEN"):
-    with open(os.environ["FAKE_REC_SEEN"], "a") as handle:
-        handle.write(json.dumps(payload) + "\n")
+    append_line(os.environ["FAKE_REC_SEEN"], json.dumps(payload))
 started = time.time()
 sleep = float(os.environ.get("FAKE_REC_SLEEP", "0"))
 if os.environ.get("FAKE_REC_SLEEP_MAP"):
@@ -24,11 +25,10 @@ if os.environ.get("FAKE_REC_SLEEP_MAP"):
     )
 time.sleep(sleep)
 if os.environ.get("FAKE_REC_TIMES"):
-    with open(os.environ["FAKE_REC_TIMES"], "a") as handle:
-        handle.write(
-            json.dumps({"id": payload["candidate"]["candidate_id"], "start": started, "end": time.time()})
-            + "\n"
-        )
+    append_line(
+        os.environ["FAKE_REC_TIMES"],
+        json.dumps({"id": payload["candidate"]["candidate_id"], "start": started, "end": time.time()}),
+    )
 if os.environ.get("FAKE_REC_FAIL"):
     sys.exit(1)
 if os.environ.get("FAKE_REC_RAW_FILE"):

@@ -12,10 +12,11 @@ import sys
 import time
 from pathlib import Path
 
+from locked_append import append_line
+
 prompt = sys.stdin.read()
 if os.environ.get("FAKE_LLM_SEEN"):
-    with open(os.environ["FAKE_LLM_SEEN"], "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(prompt) + "\n")
+    append_line(os.environ["FAKE_LLM_SEEN"], json.dumps(prompt))
 if os.environ.get("FAKE_LLM_SLEEP"):
     time.sleep(float(os.environ["FAKE_LLM_SLEEP"]))
 if os.environ.get("FAKE_LLM_FAIL"):
