@@ -219,7 +219,21 @@ def test_actions_the_policy_does_not_allow_fall_back(backend):
 
 def test_backend_command_forms(monkeypatch):
     monkeypatch.delenv("EMBEADIFY_LLM_CMD", raising=False)
-    assert llm.backend_command() == ["claude", "-p", "--output-format", "json"]
+    default = llm.backend_command()
+    assert default[:4] == ["claude", "-p", "--output-format", "json"]
+    # Token hygiene: a call must not carry the caller's tools, settings, skills, MCP servers or session.
+    for flag in (
+        "--system-prompt",
+        "--tools",
+        "--setting-sources",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--strict-mcp-config",
+        "--mcp-config",
+    ):
+        assert flag in default
+    assert default[default.index("--tools") + 1] == ""
+    assert default[default.index("--setting-sources") + 1] == ""
     assert llm.backend_command({"EMBEADIFY_LLM_CMD": '["a b", "c"]'}) == ["a b", "c"]
     assert llm.backend_command({"EMBEADIFY_LLM_CMD": "llm --fast"}) == ["llm", "--fast"]
     with pytest.raises(ValueError):
