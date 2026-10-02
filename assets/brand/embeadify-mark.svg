@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
+  <title id="title">emBEADify mark</title>
+  <desc id="desc">Beads strung on a string; one amber bead is moving into its place.</desc>
+  <rect x="1" y="1" width="94" height="94" rx="21" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <path d="M10 62C26 62 30 36 48 36S70 62 86 62" fill="none" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+  <g fill="#2563eb"><circle cx="16" cy="61" r="6"/><circle cx="29" cy="50" r="6"/></g>
+  <g fill="#059669"><circle cx="67" cy="50" r="6"/><circle cx="80" cy="61" r="6"/></g>
+  <path d="M33 32h-9M35 38h-12" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" opacity=".45" transform="translate(4 -2)"/>
+  <circle cx="48" cy="36" r="9" fill="#f59e0b"/><circle cx="48" cy="36" r="3.2" fill="#ffffff"/>
+</svg>

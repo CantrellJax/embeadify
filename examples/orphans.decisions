@@ -1,0 +1,4 @@
+# Synthetic example of an approved decisions file (apply with: embeadify apply examples/orphans.decisions)
+parent demo-3 demo-2        # evidence: parent demo-1 is closed; reviewed and approved
+priority demo-4 1
+label-add demo-4 reviewed

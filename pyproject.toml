@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "embeadify"
+dynamic = ["version"]
+description = "Safe, fast, undoable write-side companion to emBEADings for Beads"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Jackson Cantrell" }]
+keywords = ["beads", "tracker", "triage", "undo", "developer-tools"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+embeadify = "embeadify.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/CantrellJax/embeadify"
+Documentation = "https://github.com/CantrellJax/embeadify/blob/main/docs/README.md"
+Issues = "https://github.com/CantrellJax/embeadify/issues"
+Repository = "https://github.com/CantrellJax/embeadify.git"
+Changelog = "https://github.com/CantrellJax/embeadify/blob/main/CHANGELOG.md"
+emBEADings = "https://github.com/CantrellJax/embeadings"
+
+[tool.hatch.version]
+path = "src/embeadify/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/embeadify"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "LICENSE"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
