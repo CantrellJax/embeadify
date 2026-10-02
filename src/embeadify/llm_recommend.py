@@ -24,7 +24,28 @@ import sys
 import time
 
 ACTIONS = ("create", "fold", "dup", "drop")
-DEFAULT_CMD = ("claude", "-p", "--output-format", "json")
+# Measured 2026-10-02: a bare `claude -p` call carries 20-100k tokens of its own context (settings, hooks,
+# CLAUDE.md, skills, MCP tool lists) even for "Reply OK". Replacing the system prompt and turning tools,
+# settings sources, skills and MCP off brings a call to about 400 tokens of overhead. Keep these flags.
+DEFAULT_CMD = (
+    "claude",
+    "-p",
+    "--output-format",
+    "json",
+    "--system-prompt",
+    "Reply with a single JSON object only.",
+    "--tools",
+    "",
+    "--setting-sources",
+    "",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "--mcp-config",
+    '{"mcpServers":{}}',
+    "--model",
+    "sonnet",
+)
 DEFAULT_TIMEOUT = 90.0
 DEFAULT_MIN_SIMILARITY = 0.55
 # A call should cost a few thousand tokens: small slices of the candidate and only the closest neighbors.
