@@ -1,0 +1,16 @@
+name: Bug report
+description: Report a defect, reproduced against synthetic data
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Use synthetic ids (demo-1). Never paste real tracker content, hostnames, or tokens.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: embeadify, bd, Python, OS versions
+    validations:
+      required: true

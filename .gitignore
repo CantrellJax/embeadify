@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+build/
+dist/
+
+# Undo files and decisions templates describe a real tracker: never commit them.
+embeadify-undo-*.decisions
+*.decisions
+!examples/*.decisions
