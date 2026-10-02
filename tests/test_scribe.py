@@ -516,12 +516,12 @@ def test_parent_must_be_live_and_exist_else_it_is_dropped_from_the_create(sx, mo
         '{"candidate_id": "bad-1", "action": "dup", "target_id": "demo-4 close demo-5", "confidence": 1}',
         '{"candidate_id": "bad-1", "action": "create", "confidence": 5}',
         '{"candidate_id": "bad-1", "action": "create", "confidence": 1, "shell": "rm -rf /"}',
-        "x" * 70_000,
+        "OVERSIZE",  # expanded below: a huge test id would overflow the Windows environment limit
     ],
 )
 def test_invalid_recommender_output_falls_back_to_create(sx, monkeypatch, raw):
     raw_file = sx.env.root / "raw.txt"
-    raw_file.write_text(raw)
+    raw_file.write_text("x" * 70_000 if raw == "OVERSIZE" else raw)
     monkeypatch.setenv("FAKE_REC_RAW_FILE", str(raw_file))
     sx.write_policy(recommender=True)
     sx.submit(sx.candidate("bad-1"))
