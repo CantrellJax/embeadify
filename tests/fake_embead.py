@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+from locked_append import append_line
+
 
 def neighbor(issue, similarity, rank):
     closed = issue["status"] == "closed"
@@ -47,8 +49,7 @@ def main():
             if x.strip()
         ]
         limit = int(args[args.index("--limit") + 1]) if "--limit" in args else None
-        with open(os.environ["FAKE_EMBEAD_CALLS"], "a") as handle:
-            handle.write(json.dumps({"candidates": ids, "limit": limit}) + "\n")
+        append_line(os.environ["FAKE_EMBEAD_CALLS"], json.dumps({"candidates": ids, "limit": limit}))
     if os.environ.get("FAKE_EMBEAD_FAIL_MULTI") and "--candidates-file" in args:
         n = len(Path(args[args.index("--candidates-file") + 1]).read_text().splitlines())
         if n > 1:
