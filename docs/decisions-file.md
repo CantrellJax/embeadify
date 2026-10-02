@@ -13,12 +13,14 @@ a `#` preceded by two or more spaces (or a tab), so `close demo-1 fixed in PR #1
 | `label-rm ID LABEL` | `bd update ID --remove-label=LABEL` | `label-add ID LABEL` |
 | `reopen ID` | `bd reopen ID` | `close ID ...` |
 | `status ID STATUS` | `bd update ID --status=STATUS` (not `closed`) | `status ID old` |
-| `create CANDIDATE_ID type=task priority=2 parent=ID title="..." body-file=PATH` | `bd create --title=... --type=... --priority=... --description=... [--parent=ID] --json` | `close NEW_ID` (written once the id is known) |
+| `create CANDIDATE_ID type=task priority=2 parent=ID title="..." body-file=PATH` | `bd create --title=... --type=... --priority=... --description=... [--parent=ID --no-inherit-labels] --json` | `close NEW_ID` (written once the id is known) |
 | `note ID text...` | `bd update ID --append-notes=text` | none: append-only, recorded as a comment |
 
 `status` exists mainly so an undo can restore `in_progress`, `blocked`, or `deferred`.
 
 ## `create`
+
+With a `parent=`, `--no-inherit-labels` is always passed: `bd create --parent` otherwise copies the parent's labels onto the child (a stray `theme` label once leaked onto 13 real beads). A created bead never inherits labels; set them explicitly.
 
 `CANDIDATE_ID` is a durable key you choose, not a tracker id. Words after it are `key=value` with
 shell-style quoting (no shell is involved): `title=` is required; `type=` is `task` (default), `bug`,
@@ -53,7 +55,7 @@ written:
 
 An op that would change nothing (same priority, label already present, and so on) is reported as a no-op
 and skipped. Ops on the same issue run in file order inside one worker; ops on different issues run in
-parallel with no ordering guarantee. Use `-j 1` when order across issues matters.
+parallel with no ordering guarantee. Use `-j 1` (a true serial path, same undo, drift and report behavior) when order across issues matters. The default is `-j 2` (max 8); more than 2 prints a note, because parallel `bd` writes load the shared beads server (a 77-call burst alongside a heavy DB job once took it down).
 
 ## The undo file
 

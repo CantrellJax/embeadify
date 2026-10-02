@@ -75,6 +75,10 @@ def create(args):
         if parent and not any(i["id"] == parent for i in data):
             print(f"unknown parent {parent}", file=sys.stderr)
             return 1
+        # Real bd copies the parent's labels onto the child unless --no-inherit-labels is passed.
+        inherited = []
+        if parent and "--no-inherit-labels" not in args:
+            inherited = list(next(i for i in data if i["id"] == parent).get("labels", []))
         data.append(
             {
                 "id": new_id,
@@ -83,7 +87,7 @@ def create(args):
                 "issue_type": flag(args, "type"),
                 "priority": int(flag(args, "priority")),
                 "description": flag(args, "description") or "",
-                "labels": [],
+                "labels": inherited,
                 "parent_id": parent,
                 "comment_count": 0,
                 "dependencies": [],

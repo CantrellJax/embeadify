@@ -73,7 +73,10 @@ def create_argv(
         "--json",
     ]
     if parent:
+        # bd copies the parent's labels onto a child unless told not to (a stray 'theme' label leaked onto
+        # 13 real beads); labels are always set explicitly, never inherited.
         argv.append(f"--parent={parent}")
+        argv.append("--no-inherit-labels")
     return argv
 
 

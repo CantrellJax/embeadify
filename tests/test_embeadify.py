@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from embeadify import bd, decisions, doctor
+from embeadify import bd, decisions, doctor, engine
 from embeadify.cli import main
 
 
@@ -215,6 +215,46 @@ def test_parallel_run_is_correct_and_bounded(env, capsys, monkeypatch):
         live += delta
         peak = max(peak, live)
     assert 2 <= peak <= 4
+
+
+def test_default_jobs_is_two_and_high_jobs_prints_a_note(env, capsys):
+    from embeadify import cli
+
+    assert cli.DEFAULT_JOBS == 2
+    path = env.decisions("close demo-4 done\n")
+    _, _, err = run(capsys, "apply", path)
+    assert "shared beads server" not in err
+    _, _, err = run(capsys, "apply", path, "-j", "2")
+    assert "shared beads server" not in err
+    _, _, err = run(capsys, "apply", path, "-j", "3")
+    assert err.count("note: parallel bd writes load the shared beads server;") == 1
+
+
+def test_jobs_one_is_serial_with_same_undo_drift_and_report(env, capsys, monkeypatch):
+    issues = [dict(i) for i in env.issues().values()]
+    for n in range(10, 16):
+        issues.append({"id": f"demo-{n}", "title": "x", "status": "open", "priority": 2, "labels": []})
+    env.set_issues(issues)
+    monkeypatch.setenv("FAKE_BD_SLEEP", "0.05")
+    monkeypatch.setenv("FAKE_BD_MUTATE_ON_THIRD_LIST", "demo-4:status=closed")
+    path = env.decisions("close demo-4 done\n" + "".join(f"priority demo-{n} 0\n" for n in range(10, 16)))
+    code, out, err = run(capsys, "apply", path, "--apply", "-j", "1", "--undo-file", "u.decisions", "--json")
+    assert code == 1 and "shared beads server" not in err
+    payload = json.loads(out)
+    assert payload["summary"]["ok"] == 6 and payload["summary"]["skipped"] == 1
+    events = []
+    for line in env.writes():
+        phase, _verb, _ident, stamp = line.split()
+        events.append((float(stamp), 1 if phase == "start" else -1))
+    live = peak = 0
+    for _, delta in sorted(events):
+        live += delta
+        peak = max(peak, live)
+    assert peak == 1
+    undo = Path("u.decisions").read_text()
+    assert "demo-4" not in undo and "priority demo-10 2" in undo
+    code, _, _ = run(capsys, "undo", "u.decisions", "--apply", "-j", "1")
+    assert code == 0 and env.issues()["demo-10"]["priority"] == 2
 
 
 def test_jobs_hard_max(env, capsys):
@@ -449,3 +489,22 @@ def test_create_title_and_argv_are_single_words(env, capsys):
     assert call[0] == "create" and call[1].startswith("--title=close demo-4;")
     assert not (env.root / "pwned").exists()
     assert env.issues()["demo-4"]["status"] == "open"
+
+
+def test_create_argv_passes_no_inherit_labels_iff_a_parent_is_set():
+    with_parent = engine.create_argv("t", "task", 2, "demo-2", "d")
+    without = engine.create_argv("t", "task", 2, None, "d")
+    assert "--no-inherit-labels" in with_parent and "--parent=demo-2" in with_parent
+    assert "--no-inherit-labels" not in without and not any(a.startswith("--parent") for a in without)
+
+
+def test_create_under_a_parent_never_inherits_the_parents_labels(env, capsys):
+    issues = [dict(i) for i in env.issues().values()]
+    next(i for i in issues if i["id"] == "demo-2")["labels"] = ["theme"]
+    env.set_issues(issues)
+    path = env.decisions("create c-1 parent=demo-2 title=child\ncreate c-2 title=orphan\n")
+    assert run(capsys, "apply", path, "--apply")[0] == 0
+    kids = {i["title"]: i for i in env.issues().values() if i["title"] in ("child", "orphan")}
+    assert kids["child"]["parent_id"] == "demo-2" and kids["child"]["labels"] == []
+    assert kids["orphan"]["labels"] == []
+    assert any("--no-inherit-labels" in c for c in env.calls())

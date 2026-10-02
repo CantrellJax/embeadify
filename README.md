@@ -74,7 +74,7 @@ The full grammar is in [`docs/decisions-file.md`](docs/decisions-file.md).
 | Undo file first | The undo file is written before the first `bd` write. It is itself a decisions file: `embeadify undo FILE --apply`. |
 | Drift check | Just before writing, a second snapshot is compared; an op whose issue changed since validation is skipped and reported. |
 | Failures never hide | A failed op never aborts the batch, is listed with the exact `bd` retry command, and makes the exit code non-zero. |
-| Bounded parallelism | `-j N` workers (default 4, hard maximum 8). Each worker runs a plain `bd` subprocess. |
+| Bounded parallelism | `-j N` workers (default 2, hard maximum 8; above 2 prints a note, since parallel writes load the shared beads server). Each worker runs a plain `bd` subprocess. |
 | Honors `bd` guards | Your environment (`BEADS_DOLT_*` and friends) is passed to `bd` unchanged. A guard refusal is shown, never bypassed, never retried. |
 | Secrets stay hidden | Passwords, tokens, and URL credentials are masked in every message. |
 | Target is visible | `embeadify doctor` and every run print the host and database; `--apply` is refused when `bd` cannot report its target. |
