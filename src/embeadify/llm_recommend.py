@@ -47,7 +47,9 @@ DEFAULT_CMD = (
     "sonnet",
 )
 DEFAULT_TIMEOUT = 90.0
-DEFAULT_MIN_SIMILARITY = 0.55
+DEFAULT_MIN_SIMILARITY = (
+    0.80  # just under the executor floor (0.85): below it a call cannot change the outcome
+)
 # A call should cost a few thousand tokens: small slices of the candidate and only the closest neighbors.
 MAX_TITLE = 200
 MAX_BODY = 1500  # characters of the candidate body that reach the prompt
@@ -289,7 +291,11 @@ def recommend(payload, env=None) -> dict:
         constraints = payload.get("constraints") or {}
         allowed = [a for a in constraints.get("allowed_actions", ACTIONS) if a in ACTIONS]
         floor = constraints.get("llm_min_similarity", DEFAULT_MIN_SIMILARITY)
-        floor = floor if isinstance(floor, (int, float)) and not isinstance(floor, bool) else 0.55
+        floor = (
+            floor
+            if isinstance(floor, (int, float)) and not isinstance(floor, bool)
+            else DEFAULT_MIN_SIMILARITY
+        )
         sims = [
             n["similarity"]
             for n in payload.get("neighbors") or []

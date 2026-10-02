@@ -33,9 +33,21 @@ class Policy:
     default_parent: str | None = None  # placement rule (d): a container for otherwise unplaced creates
     type_parent: dict[str, str] = field(default_factory=dict)  # placement: issue type -> parent id
     allow_deferred_parent: bool = True  # a deferred parent is live for placement; closed never is
-    llm_min_similarity: float = 0.55  # the reference LLM recommender skips the model below this
+    llm_min_similarity: float = (
+        0.80  # the reference LLM recommender skips the model below this (just under min_similarity)
+    )
     max_llm_calls: int = 40  # per pass: past this, candidates skip the model and take the built-in path
     max_llm_tokens: int = 250_000  # per pass, input + output as the backend reports them
+
+
+def llm_floor_note(policy: Policy) -> str | None:
+    """One stderr line when the model pre-filter sits far below the executor floor."""
+    if policy.min_similarity - policy.llm_min_similarity > 0.2 + 1e-9:
+        return (
+            f"note: llm_min_similarity {policy.llm_min_similarity} is more than 0.2 below the executor"
+            f" similarity floor {policy.min_similarity}; those model calls rarely change decisions"
+        )
+    return None
 
 
 def _check(key: str, value, kind) -> object:

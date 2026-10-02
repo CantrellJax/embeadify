@@ -16,7 +16,7 @@ from . import candidate as cand
 from . import judge, metrics, replay, runner, tune
 from . import labels as lb
 from . import store as st
-from .policy import PolicyError, load
+from .policy import PolicyError, llm_floor_note, load
 
 EXIT_OK, EXIT_PARTIAL, EXIT_ERROR = 0, 1, 2
 
@@ -231,6 +231,9 @@ def cmd_run(args) -> int:
             f" policy {policy.policy_version}",
             file=sys.stderr,
         )
+        note = llm_floor_note(policy)
+        if note:
+            print(note, file=sys.stderr)
         with queue.lock():
             if args.once:
                 summary = runner.run_once(
@@ -352,6 +355,9 @@ def cmd_replay(args) -> int:
         f"mode: SHADOW REPLAY (nothing is written to the tracker or queued); policy {policy.policy_version}",
         file=sys.stderr,
     )
+    note = llm_floor_note(policy)
+    if note:
+        print(note, file=sys.stderr)
     try:
         raw = bd.run_json(snapshot.LIST_ARGS)  # the ONE tracker read
     except bd.BdError as error:

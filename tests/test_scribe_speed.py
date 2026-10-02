@@ -366,10 +366,42 @@ def llm_prompts(sp):
 def test_the_prefilter_spawns_no_llm_process_and_counts_as_skipped(llm_sp, capsys):
     rp(llm_sp, "--since", "2026-09-02", "--json", "--timing", "--recommender-jobs", "4")
     data = json.loads(capsys.readouterr().out)
-    # b-01 only has a 0.5 neighbor (below the 0.55 floor): its model call never happens
+    # b-01 only has a 0.5 neighbor (below the 0.80 floor): its model call never happens
     assert llm_prompts(llm_sp) == N - 1
     assert data["timing"]["llm_calls"] == N - 1 and data["timing"]["llm_skipped"] == 1
     assert data["budget_skipped"] == 0
+
+
+def test_prefilter_calls_at_the_floor_and_skips_below_it_without_spawning(llm_sp, capsys, monkeypatch):
+    table = {"replay-" + i: [nb("p-1", 0.80 if i == "b-01" else 0.79 if i == "b-02" else 0.5)] for i in IDS}
+    fixture = llm_sp.env.root / "embead-floor.json"
+    fixture.write_text(json.dumps(table))
+    monkeypatch.setenv("FAKE_EMBEAD_FIXTURE", str(fixture))
+    rp(
+        llm_sp,
+        "--json",
+        "--timing",
+        "--ids-file",
+        _ids_file(llm_sp, ["b-01", "b-02", "b-03"]),
+    )
+    t = json.loads(capsys.readouterr().out)["timing"]
+    assert t["llm_calls"] == 1 and t["llm_skipped"] == 2  # only the 0.80 candidate reaches the model
+    assert llm_prompts(llm_sp) == 1
+
+
+def _ids_file(sp, ids):
+    f = sp.env.root / "ids.txt"
+    f.write_text("\n".join(ids) + "\n")
+    return str(f)
+
+
+def test_a_far_below_floor_policy_prints_a_stderr_note(llm_sp, capsys):
+    llm_sp.write_policy(llm_min_similarity=0.5)
+    rp(llm_sp, "--since", "2026-09-02", "--json")
+    assert "rarely change decisions" in capsys.readouterr().err
+    llm_sp.write_policy(llm_min_similarity=0.7)
+    rp(llm_sp, "--since", "2026-09-02", "--json")
+    assert "rarely change decisions" not in capsys.readouterr().err
 
 
 def test_usage_is_captured_logged_and_summed(llm_sp, capsys):
