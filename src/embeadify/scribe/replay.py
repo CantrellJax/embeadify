@@ -19,7 +19,8 @@ Known limit: titles, parents and labels are as of the snapshot, not as of X's cr
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping
+import time
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -204,6 +205,7 @@ class ReplaySummary:
     skipped: dict[str, int] = field(default_factory=dict)
     degraded: int = 0
     details: list[str] = field(default_factory=list)
+    timing: runner.Timing = field(default_factory=runner.Timing)
 
     def skip(self, why: str) -> None:
         self.skipped[why] = self.skipped.get(why, 0) + 1
@@ -247,9 +249,18 @@ def replay(
     recommender: tuple[str, ...] = (),
     neighbor_limit: int = match.MAX_NEIGHBORS,
     timeout: float = 120.0,
+    jobs: int = 1,
+    progress: Callable[[int, int, float], None] | None = None,
 ) -> ReplaySummary:
-    """Replay beads from ONE snapshot (``raw``, the decoded `bd list --all --limit 0 --json`)."""
+    """Replay beads from ONE snapshot (``raw``, the decoded `bd list --all --limit 0 --json`).
+
+    ONE `embead match` call covers every selected bead (temporal fairness is applied afterwards, per bead,
+    by ``visible_neighbors``). Recommendations may overlap (``jobs``); each decision is appended to the log
+    the moment it is made, in bead order, so an interrupted run leaves a valid log and a re-run resumes.
+    """
+    began = time.monotonic()
     summary = ReplaySummary()
+    summary.timing.recommender_jobs = runner.clamp_jobs(jobs)
     base = snapshot.parse(raw)
     beads = parse_beads(raw)
     wanted = None if ids is None else set(ids)
@@ -258,6 +269,7 @@ def replay(
             summary.skip("not_in_snapshot")
             summary.details.append(f"{missing}: not in the snapshot")
     done = replayed_keys(queue)
+    todo: list[tuple[Bead, dict]] = []
     for bead in sorted(beads.values(), key=lambda b: b.key):
         if wanted is not None and bead.id not in wanted:
             continue
@@ -275,18 +287,39 @@ def replay(
         elif (c := candidate_for(bead)) is None:
             summary.skip("no_title")
         else:
-            if limit is not None and summary.replayed >= limit:
+            if limit is not None and len(todo) >= limit:
                 break
-            _one(queue, policy, bead, c, beads, base, recommender, neighbor_limit, timeout, summary)
+            todo.append((bead, c))
+    if todo:
+        asked = neighbor_limit + NEIGHBOR_PAD
+        started = time.monotonic()
+        found, calls = match.fetch_many([c for _, c in todo], policy.match_command, timeout, limit=asked)
+        summary.timing.match_seconds += time.monotonic() - started
+        summary.timing.match_calls += calls
+        with runner.Proposer(
+            policy, recommender, timeout, jobs, runner.budget_for(policy, recommender)
+        ) as proposer:
+            pending = []
+            for bead, c in todo:
+                raw_found, degraded = found[c["candidate_id"]]
+                neighbors = visible_neighbors(raw_found, bead, beads, neighbor_limit)
+                pending.append((bead, c, raw_found, neighbors, degraded, proposer.submit(c, neighbors)))
+            for n, (bead, c, raw_found, neighbors, degraded, future) in enumerate(pending, 1):
+                _one(queue, policy, bead, c, raw_found, neighbors, degraded, future.result(), base, beads,
+                     recommender, timeout, summary)  # fmt: skip
+                if progress:
+                    progress(n, len(pending), time.monotonic() - began)
+    summary.timing.wall_seconds = time.monotonic() - began
     return summary
 
 
-def _one(queue, policy, bead, c, beads, base, recommender, neighbor_limit, timeout, summary) -> None:
-    asked = neighbor_limit + NEIGHBOR_PAD
-    found, degraded = match.fetch(c, policy.match_command, timeout, limit=asked)
-    neighbors = visible_neighbors(found, bead, beads, neighbor_limit)
+def _one(
+    queue, policy, bead, c, found, neighbors, degraded, proposal, base, beads, recommender, timeout, summary
+):
     view = TemporalSnapshot(base, beads, bead)
-    rec, plan, fields = runner.decide(c, neighbors, degraded, view, policy, recommender, timeout)
+    rec, plan, fields = runner.decide(c, neighbors, degraded, view, policy, recommender, timeout, proposal)
+    summary.timing.note_decision(fields)
+    summary.timing.recommender_seconds += proposal.seconds
     digest = cand.digest(c)
     queue.log(
         {

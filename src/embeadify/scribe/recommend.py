@@ -15,6 +15,9 @@ MAX_EVIDENCE = 20
 MAX_EVIDENCE_LEN = 500
 
 
+METADATA_KEYS = ("llm_input_tokens", "llm_output_tokens", "llm_ms", "llm_cost_usd")
+
+
 class BadRecommendation(ValueError):
     pass
 
@@ -29,6 +32,7 @@ class Recommendation:
     confidence: float = 0.0
     policy_version: str = ""
     acceptance_covered: bool = False  # fold only: the target's existing acceptance already covers it
+    metadata: dict = field(default_factory=dict)  # backend telemetry (tokens, ms); never read for a decision
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -66,8 +70,15 @@ def from_obj(obj, candidate_id: str) -> Recommendation:
     covered = obj.get("acceptance_covered", False)
     if not isinstance(covered, bool):
         raise BadRecommendation("acceptance_covered must be true or false")
+    meta = obj.get("metadata", {})
+    if not isinstance(meta, dict) or set(meta) - set(METADATA_KEYS):
+        raise BadRecommendation("metadata must be an object with only: " + ", ".join(METADATA_KEYS))
+    for v in meta.values():
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
+            raise BadRecommendation("metadata values must be non-negative numbers or null")
     return Recommendation(
         candidate_id=candidate_id,
+        metadata=dict(meta),
         action=obj["action"],
         target_id=obj.get("target_id"),
         parent=obj.get("parent"),

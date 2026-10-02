@@ -31,8 +31,12 @@ Run it from an operator shell or a scheduled agent, with the same `--queue-dir` 
 ### `scribe replay`
 
 `embeadify scribe replay [--since YYYY-MM-DD | --ids-file F] [--limit N] [--again] [--include-ephemeral]
-[--include-duplicates] [--recommender CMD] [--policy F] [--neighbor-limit 10] [--queue-dir D] [--json]`
+[--include-duplicates] [--recommender CMD] [--policy F] [--neighbor-limit 10] [--recommender-jobs 4]
+[--max-llm-calls N] [--max-llm-tokens N] [--timing] [--queue-dir D] [--json]`
 
+- ONE `embead match` call covers every selected bead and recommendations run in parallel, so a day of
+  about 50 beads takes minutes. Each decision is appended as soon as it is made; re-run the same command
+  after an interruption and it resumes. Speed, budget and `--timing`: [scribe.md](scribe.md#performance-budget-and---timing).
 - `candidate_id` is `replay-<bead id>`. Candidates are NOT queued, so `scribe run --live` can never act on
   them; decisions go only to `log.jsonl` with `replay: true`.
 - Ephemeral beads and beads closed as duplicates (close reason mentions "duplicate", or a `duplicates`

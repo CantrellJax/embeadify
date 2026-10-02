@@ -3,11 +3,17 @@
 Knobs (environment): FAKE_EMBEAD_FIXTURE (JSON file {candidate_id: [neighbor, ...]}), else
 FAKE_EMBEAD_TITLE_CONTAINS + FAKE_EMBEAD_SIM (every issue in FAKE_BD_DB whose title contains the text
 is returned at that similarity), FAKE_EMBEAD_FAIL (exit 3), FAKE_EMBEAD_GARBAGE (print non-JSON).
+FAKE_EMBEAD_CALLS: every invocation appends {"candidates": [ids], "limit": N|null} there.
+FAKE_EMBEAD_FAIL_MULTI:
+exit 3 only for a batch of 2+ candidates. FAKE_EMBEAD_REVERSE: report candidates in reverse order.
+FAKE_EMBEAD_OMIT: comma-separated candidate ids left out of the report. FAKE_EMBEAD_SLEEP: seconds to sleep.
+`--limit N` keeps at most N neighbors per candidate, like the real thing.
 """
 
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -32,6 +38,22 @@ def neighbor(issue, similarity, rank):
 
 def main():
     args = sys.argv[1:]
+    if os.environ.get("FAKE_EMBEAD_SLEEP"):
+        time.sleep(float(os.environ["FAKE_EMBEAD_SLEEP"]))
+    if os.environ.get("FAKE_EMBEAD_CALLS") and "--candidates-file" in args:
+        ids = [
+            json.loads(x)["candidate_id"]
+            for x in Path(args[args.index("--candidates-file") + 1]).read_text().splitlines()
+            if x.strip()
+        ]
+        limit = int(args[args.index("--limit") + 1]) if "--limit" in args else None
+        with open(os.environ["FAKE_EMBEAD_CALLS"], "a") as handle:
+            handle.write(json.dumps({"candidates": ids, "limit": limit}) + "\n")
+    if os.environ.get("FAKE_EMBEAD_FAIL_MULTI") and "--candidates-file" in args:
+        n = len(Path(args[args.index("--candidates-file") + 1]).read_text().splitlines())
+        if n > 1:
+            print("embead: batch too big", file=sys.stderr)
+            return 3
     if os.environ.get("FAKE_EMBEAD_FAIL"):
         print("embead: model unavailable", file=sys.stderr)
         return 3
@@ -53,6 +75,8 @@ def main():
             found = [neighbor(i, sim, n) for n, i in enumerate(i for i in issues if needle in i["title"])]
         else:
             found = []
+        if "--limit" in args:
+            found = found[: int(args[args.index("--limit") + 1])]
         out.append(
             {
                 "candidate_id": c["candidate_id"],
@@ -63,6 +87,10 @@ def main():
                 "neighbors": found,
             }
         )
+    omit = set(filter(None, os.environ.get("FAKE_EMBEAD_OMIT", "").split(",")))
+    out = [o for o in out if o["candidate_id"] not in omit]
+    if os.environ.get("FAKE_EMBEAD_REVERSE"):
+        out.reverse()
     report = {
         "schema_version": 1,
         "report_type": "match",

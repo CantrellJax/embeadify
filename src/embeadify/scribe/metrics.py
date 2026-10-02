@@ -45,6 +45,7 @@ def block(rows: list[dict], labels: dict) -> dict:
     placement_judged = [ln for r, ln in labeled_creates if ln["verdict"] in ("correct", "bad_placement")]
     placement_ok = [ln for ln in placement_judged if ln["verdict"] == "correct"]
     return {
+        "llm_usage": usage(rows),
         "candidates": len(rows),
         "action_mix": {a: mix.get(a, 0) for a in ACTIONS if mix.get(a, 0)}
         | {k: v for k, v in mix.items() if k not in ACTIONS},
@@ -63,6 +64,28 @@ def block(rows: list[dict], labels: dict) -> dict:
         },
         "missed_duplicate_rate": rate(len(missed), len(labeled_creates)),
         "placement_accuracy": rate(len(placement_ok), len(placement_judged)),
+    }
+
+
+def usage(rows: list[dict]) -> dict:
+    """Model spend from the log: totals and per-call averages over the calls that reported tokens."""
+    called = [r for r in rows if (r.get("recommender") or {}).get("model_called")]
+    seen = [
+        r for r in called if r.get("llm_input_tokens") is not None or r.get("llm_output_tokens") is not None
+    ]
+    tin = sum(r.get("llm_input_tokens") or 0 for r in seen)
+    tout = sum(r.get("llm_output_tokens") or 0 for r in seen)
+    ms = sum(r.get("llm_ms") or 0 for r in called)
+    n = len(seen)
+    return {
+        "calls": len(called),
+        "calls_reporting_tokens": n,
+        "input_tokens": tin,
+        "output_tokens": tout,
+        "avg_input_tokens": (tin / n) if n else None,
+        "avg_output_tokens": (tout / n) if n else None,
+        "avg_ms": (ms / len(called)) if called else None,
+        "budget_skipped": sum(1 for r in rows if (r.get("recommender") or {}).get("budget_skipped")),
     }
 
 
@@ -95,6 +118,18 @@ def render_block(name: str, b: dict) -> list[str]:
     )
     lines.append(f"  unplaced creates:  {fmt(b['unplaced_rate'], 'creates')}")
     lines.append(f"  LLM called:        {fmt(b['llm_call_rate'], 'external-recommender rows')}")
+    u = b["llm_usage"]
+    if u["calls"] or u["budget_skipped"]:
+        avg = (
+            f"avg {u['avg_input_tokens']:.0f} in / {u['avg_output_tokens']:.0f} out per call"
+            if u["calls_reporting_tokens"]
+            else "no token usage reported"
+        )
+        ms = f", avg {u['avg_ms']:.0f} ms" if u["avg_ms"] is not None else ""
+        lines.append(
+            f"  LLM spend:         {u['calls']} calls, tokens in {u['input_tokens']} out {u['output_tokens']}"
+            f" ({avg}{ms}); skipped for budget {u['budget_skipped']}"
+        )
     lines.append(f"  agrees w/ filer:   {fmt(b['agreement_with_actual'], 'rows with actual')}")
     lines.append(f"  placement == filer {fmt(b['placement_agreement_with_actual'], 'creates with actual')}")
     lines.append(
