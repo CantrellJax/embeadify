@@ -206,8 +206,15 @@ class Queue:
     # -- the log ------------------------------------------------------------------------------
     def log(self, entry: dict) -> None:
         self.ensure()
-        with open(self.log_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        line = json.dumps(entry, sort_keys=True) + "\n"
+        with open(self.log_path, "ab+") as handle:
+            # a crash can leave a torn last line: end it first so this entry never fuses onto it
+            size = handle.seek(0, os.SEEK_END)
+            if size:
+                handle.seek(size - 1)
+                if handle.read(1) != b"\n":
+                    line = "\n" + line
+            handle.write(line.encode("utf-8"))
 
     def read_log(self) -> list[dict]:
         try:

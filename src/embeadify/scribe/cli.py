@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import dataclasses
 import json
 import os
 import shlex
@@ -205,7 +207,7 @@ def cmd_run(args) -> int:
     queue = _queue(args)
     policy_path = Path(args.policy) if args.policy else (queue.root / "policy.toml")
     try:
-        policy = load(policy_path if args.policy or policy_path.exists() else None)
+        policy = _with_budget(load(policy_path if args.policy or policy_path.exists() else None), args)
     except PolicyError as error:
         return _err(str(error))
     if args.live and not policy.live:
@@ -238,6 +240,7 @@ def cmd_run(args) -> int:
                     recommender=recommender,
                     timeout=args.timeout,
                     limit=args.limit,
+                    jobs=args.recommender_jobs,
                 )
             else:
                 summary = runner.run_loop(
@@ -248,6 +251,7 @@ def cmd_run(args) -> int:
                     timeout=args.timeout,
                     interval=args.interval,
                     limit=args.limit,
+                    jobs=args.recommender_jobs,
                 )
     except st.LockHeld as error:
         return _err(str(error))
@@ -260,6 +264,10 @@ def cmd_run(args) -> int:
     )
     for line in summary.details:
         print(f"  {line}")
+    if line := runner.budget_line(summary.timing, policy):
+        print(line)
+    if args.timing:
+        print(summary.timing.line())
     return EXIT_PARTIAL if summary.failed or summary.invalid else EXIT_OK
 
 
@@ -274,10 +282,68 @@ def _recommender(args, policy) -> tuple[str, ...]:
     return policy.recommender_command
 
 
+def _progress(n: int, total: int, elapsed: float) -> None:
+    """A live progress line on stderr (stdout stays the report, and stays valid for --json)."""
+    print(f"replayed {n}/{total} ({elapsed:.0f}s elapsed)", file=sys.stderr, flush=True)
+
+
+def _jobs(text: str) -> int:
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if not 1 <= n <= runner.MAX_JOBS:
+        raise argparse.ArgumentTypeError(f"must be from 1 to {runner.MAX_JOBS}")
+    return n
+
+
+def _with_budget(policy, args):
+    over = {}
+    if args.max_llm_calls is not None:
+        over["max_llm_calls"] = args.max_llm_calls
+    if args.max_llm_tokens is not None:
+        over["max_llm_tokens"] = args.max_llm_tokens
+    return dataclasses.replace(policy, **over) if over else policy
+
+
+def _nonneg(text: str) -> int:
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return n
+
+
+def _add_speed_flags(p) -> None:
+    p.add_argument(
+        "--max-llm-calls",
+        type=_nonneg,
+        metavar="N",
+        help="model calls per pass; past it candidates use the built-in recommender (default: policy, 40)",
+    )
+    p.add_argument(
+        "--max-llm-tokens",
+        type=_nonneg,
+        metavar="N",
+        help="model tokens (in + out, as the backend reports them) per pass (default: policy, 250000)",
+    )
+    p.add_argument(
+        "--recommender-jobs",
+        type=_jobs,
+        default=runner.DEFAULT_JOBS,
+        metavar="N",
+        help=f"recommender calls in flight at once, 1-{runner.MAX_JOBS} (default {runner.DEFAULT_JOBS};"
+        " 1 = one at a time). Decisions and writes stay in candidate order",
+    )
+    p.add_argument("--timing", action="store_true", help="print where the time went")
+
+
 def cmd_replay(args) -> int:
     queue = _queue(args)
     try:
-        policy = _policy(args, queue)
+        policy = _with_budget(_policy(args, queue), args)
         since = replay.parse_since(args.since) if args.since else None
         ids = replay.read_ids_file(args.ids_file) if args.ids_file else None
     except (PolicyError, ValueError, OSError) as error:
@@ -303,6 +369,8 @@ def cmd_replay(args) -> int:
         recommender=_recommender(args, policy),
         neighbor_limit=args.neighbor_limit,
         timeout=args.timeout,
+        jobs=args.recommender_jobs,
+        progress=_progress,
     )
     data = {
         "selected": summary.selected,
@@ -311,7 +379,10 @@ def cmd_replay(args) -> int:
         "skipped": dict(sorted(summary.skipped.items())),
         "degraded": summary.degraded,
         "details": summary.details,
+        "budget_skipped": summary.timing.budget_skipped,
     }
+    if args.timing:
+        data["timing"] = summary.timing.to_dict()
     if args.json:
         print(json.dumps(data, sort_keys=True))
     else:
@@ -322,6 +393,10 @@ def cmd_replay(args) -> int:
         )
         for line in summary.details:
             print(f"  {line}")
+        if line := runner.budget_line(summary.timing, policy):
+            print(line)
+        if args.timing:
+            print(summary.timing.line())
     return EXIT_OK
 
 
@@ -443,6 +518,7 @@ def add_parsers(sub) -> None:
     p.add_argument("--interval", type=float, default=30.0, help="seconds between passes without --once")
     p.add_argument("--limit", type=int, help="process at most N candidates per pass")
     p.add_argument("--timeout", type=float, default=120.0, help="per bd/embead/recommender call, seconds")
+    _add_speed_flags(p)
     p.set_defaults(func=cmd_run)
 
     p = ssub.add_parser(
@@ -464,6 +540,7 @@ def add_parsers(sub) -> None:
         "--neighbor-limit", type=int, default=10, help="neighbors kept per bead after the temporal filter"
     )
     p.add_argument("--timeout", type=float, default=120.0)
+    _add_speed_flags(p)
     p.set_defaults(func=cmd_replay)
 
     p = ssub.add_parser("judge-pack", help="a stratified sample of shadow decisions for an adjudicator")

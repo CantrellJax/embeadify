@@ -34,6 +34,8 @@ class Policy:
     type_parent: dict[str, str] = field(default_factory=dict)  # placement: issue type -> parent id
     allow_deferred_parent: bool = True  # a deferred parent is live for placement; closed never is
     llm_min_similarity: float = 0.55  # the reference LLM recommender skips the model below this
+    max_llm_calls: int = 40  # per pass: past this, candidates skip the model and take the built-in path
+    max_llm_tokens: int = 250_000  # per pass, input + output as the backend reports them
 
 
 def _check(key: str, value, kind) -> object:
@@ -81,6 +83,8 @@ def load(path: Path | None) -> Policy:
         "type_parent": "idmap",
         "allow_deferred_parent": bool,
         "llm_min_similarity": float,
+        "max_llm_calls": int,
+        "max_llm_tokens": int,
     }
     if unknown := sorted(set(table) - set(known)):
         raise PolicyError(f"unknown policy keys: {', '.join(unknown)}")

@@ -21,17 +21,20 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 ACTIONS = ("create", "fold", "dup", "drop")
 DEFAULT_CMD = ("claude", "-p", "--output-format", "json")
 DEFAULT_TIMEOUT = 90.0
 DEFAULT_MIN_SIMILARITY = 0.55
-MAX_TITLE = 300
-MAX_BODY = 6000  # characters of the candidate body that reach the prompt
-MAX_REFS = 10
-MAX_REF = 200
-MAX_NEIGHBORS = 10
-MAX_NEIGHBOR_TITLE = 200
+# A call should cost a few thousand tokens: small slices of the candidate and only the closest neighbors.
+MAX_TITLE = 200
+MAX_BODY = 1500  # characters of the candidate body that reach the prompt
+MAX_REFS = 5
+MAX_REF = 120
+MAX_NEIGHBORS = 5
+MAX_NEIGHBOR_TITLE = 120
+MAX_NEIGHBOR_EVIDENCE = 160
 MAX_EVIDENCE = 5
 MAX_EVIDENCE_LEN = 300
 MAX_REPLY = 64 * 1024
@@ -64,6 +67,10 @@ def _cut(text, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + f"...[truncated {len(text) - limit} characters]"
 
 
+def _one_line(text) -> str:
+    return " ".join(text.split()) if isinstance(text, str) else ""
+
+
 def build_prompt(payload: dict) -> str:
     """The full prompt. Untrusted text appears only as JSON strings inside one hash-delimited block."""
     cand = payload.get("candidate") or {}
@@ -81,13 +88,13 @@ def build_prompt(payload: dict) -> str:
                 "similarity": n.get("similarity"),
                 "is_closed": bool(n.get("is_closed")),
                 "title": _cut(n.get("title"), MAX_NEIGHBOR_TITLE),
-                "resolution_evidence": _cut(n.get("resolution_evidence"), MAX_NEIGHBOR_TITLE),
+                "resolution_evidence": _cut(_one_line(n.get("resolution_evidence")), MAX_NEIGHBOR_EVIDENCE),
             }
             for n in (payload.get("neighbors") or [])[:MAX_NEIGHBORS]
             if isinstance(n, dict)
         ],
     }
-    block = json.dumps(data, ensure_ascii=True, indent=1)
+    block = json.dumps(data, ensure_ascii=True, separators=(",", ":"))
     # The delimiter carries a hash of the data, so text inside it cannot predict (and so cannot forge) it.
     tag = hashlib.sha256(block.encode("ascii")).hexdigest()[:16]
     return f"{INSTRUCTIONS}\n=== BEGIN UNTRUSTED DATA {tag} ===\n{block}\n=== END UNTRUSTED DATA {tag} ===\n"
@@ -164,6 +171,40 @@ def unwrap(stdout: str) -> str:
     return stdout
 
 
+def _count(value):
+    return (
+        int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
+    )
+
+
+def usage_of(stdout: str, ms: float | None = None) -> dict:
+    """Token/cost telemetry the backend reported, as metadata. Defensive: every field is null when absent.
+
+    `claude -p --output-format json` reports `usage` (input_tokens, output_tokens and the cache token
+    counts, all of which are input the model read) and `total_cost_usd`. Input is the sum of the three.
+    """
+    meta = {"llm_input_tokens": None, "llm_output_tokens": None, "llm_ms": None, "llm_cost_usd": None}
+    if ms is not None:
+        meta["llm_ms"] = int(ms)
+    try:
+        outer = json.loads(stdout)
+    except ValueError:
+        return meta
+    usage = outer.get("usage") if isinstance(outer, dict) else None
+    if isinstance(usage, dict):
+        parts = [
+            _count(usage.get(k))
+            for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        ]
+        known = [p for p in parts if p is not None]
+        meta["llm_input_tokens"] = sum(known) if known else None
+        meta["llm_output_tokens"] = _count(usage.get("output_tokens"))
+    cost = outer.get("total_cost_usd") if isinstance(outer, dict) else None
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0:
+        meta["llm_cost_usd"] = round(float(cost), 6)
+    return meta
+
+
 def backend_command(env=None) -> list[str]:
     raw = (env if env is not None else os.environ).get("EMBEADIFY_LLM_CMD", "").strip()
     if not raw:
@@ -184,8 +225,9 @@ def timeout_seconds(env=None) -> float:
         return DEFAULT_TIMEOUT
 
 
-def fallback(candidate_id: str, note: str, policy_version: str = "") -> dict:
+def fallback(candidate_id: str, note: str, policy_version: str = "", metadata: dict | None = None) -> dict:
     return {
+        **({"metadata": metadata} if metadata else {}),
         "candidate_id": candidate_id,
         "action": "create",
         "target_id": None,
@@ -218,6 +260,8 @@ def recommend(payload, env=None) -> dict:
     """Payload in, typed recommendation out. Never raises; every problem is a plain create."""
     cid = ""
     version = ""
+    meta: dict = {}
+    started = time.monotonic()
     try:
         cid = payload["candidate"]["candidate_id"]
         version = str(payload.get("policy_version") or "")
@@ -234,15 +278,19 @@ def recommend(payload, env=None) -> dict:
             return fallback(
                 cid, f"no neighbor at or above llm_min_similarity {floor}; model not called", version
             )
+        started = time.monotonic()
         reply = ask_backend(build_prompt(payload), backend_command(env), timeout_seconds(env))
+        meta = usage_of(reply, (time.monotonic() - started) * 1000)
         checked = validate(parse_reply(unwrap(reply)), neighbor_ids(payload), allowed)
     except subprocess.TimeoutExpired:
-        return fallback(cid, "backend timed out", version)
+        return fallback(cid, "backend timed out", version, usage_of("", (time.monotonic() - started) * 1000))
     except FileNotFoundError:
         return fallback(cid, "backend command not found", version)
     except (Invalid, RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
-        return fallback(cid, f"unusable model output or backend ({type(error).__name__}: {error})", version)
-    return {"candidate_id": cid, "parent": None, "policy_version": version[:64], **checked}
+        return fallback(
+            cid, f"unusable model output or backend ({type(error).__name__}: {error})", version, meta
+        )
+    return {"candidate_id": cid, "parent": None, "policy_version": version[:64], "metadata": meta, **checked}
 
 
 def main(argv=None) -> int:

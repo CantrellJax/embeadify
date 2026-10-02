@@ -22,7 +22,7 @@ the tracker. The scribe never blocks `bd create`: the audited direct path stays.
 | `embeadify scribe submit CANDIDATE.json [--queue-dir D] [--json]` | Validate and queue one candidate (`-` reads stdin). Immutable. |
 | `embeadify scribe status` | Counts: queued, shadowed, failed, decided, invalid; run-lock holder. |
 | `embeadify scribe receipts [--action A]` | One line per submission: receipt id, state, action, bead. |
-| `embeadify scribe run [--once] [--live] [--policy F] [--recommender CMD] [--interval S] [--limit N]` | Process the queue. Shadow unless `--live` AND the policy allows it. |
+| `embeadify scribe run [--once] [--live] [--policy F] [--recommender CMD] [--interval S] [--limit N] [--recommender-jobs N] [--max-llm-calls N] [--max-llm-tokens N] [--timing]` | Process the queue. Shadow unless `--live` AND the policy allows it. |
 | `embeadify scribe report` | Counts by recommended and executed action; every downgrade and degraded input. |
 | `embeadify scribe replay`, `judge-pack`, `label`, `metrics`, `tune` | The trainee loop: dogfood on existing beads in shadow, label, measure, tune. See [scribe-trainee.md](scribe-trainee.md). |
 
@@ -180,6 +180,13 @@ Rules it keeps:
   `create` with confidence 0 and an `evidence` note naming why. Its output is still re-validated by the
   executor, so it can narrow but never widen what is allowed. It never proposes a parent; placement is the
   executor's.
+- Prompt size: a call is about 1.5k tokens. At most the top 5 neighbors (titles cut at 120 characters,
+  close reason on one line, 160 characters), the body cut at 1,500 characters, at most 5 evidence refs.
+  The prompt JSON is compact.
+- Telemetry: when the backend reports usage (`claude -p --output-format json` does) the recommender puts
+  `llm_input_tokens` (input plus cache tokens), `llm_output_tokens`, `llm_ms` and `llm_cost_usd` in the
+  recommendation's `metadata`; each is `null` when absent. `log.jsonl` rows carry `llm_input_tokens`,
+  `llm_output_tokens` and `llm_ms`; `scribe metrics` shows totals and per-call averages.
 - Cost and latency: one backend call per candidate that reaches it, so latency is the model's. The
   exact retries never reach it (the marker reconcile runs first), and a pre-filter skips
   the model when the top neighbor's similarity is below `llm_min_similarity` (default 0.55; the scribe
@@ -191,8 +198,10 @@ Try it in shadow mode first: run the built-in and the plug-in over the same queu
 
 ### `embead match` contract (parsed in `src/embeadify/scribe/match.py` only)
 
-Called once per candidate: `embead match --candidates-file FILE.jsonl --json`, where the file holds one
-`{"candidate_id","title","body"}` object. Report fields read: `schema_version` (1), `report_type`
+Called ONCE per batch: `embead match --candidates-file FILE.jsonl --json`, where the file holds one
+`{"candidate_id","title","body"}` object per candidate; results are mapped back by `candidate_id` (report
+order is irrelevant). A candidate the report omits is degraded on its own; if the batch call fails, every
+candidate falls back to its own call (`degraded` is logged as before). Report fields read: `schema_version` (1), `report_type`
 (`match`), `candidates[].candidate_id`, `candidates[].neighbors[]` with `issue_id`, `status`, `issue_type`,
 `priority`, `title`, `similarity`, `is_closed`, `parent_id`, `parent_status`, and
 `resolution_evidence` (`{"kind": "close_reason", "text": ...}` or null). Fixture:
@@ -218,6 +227,8 @@ placement_min_similarity = 0.6  # neighbor placement floor
 default_parent = "proj-inbox"   # placement rule: last resort before `unplaced`
 allow_deferred_parent = true    # deferred parents are live for placement; closed never
 llm_min_similarity = 0.55       # embeadify-recommend skips the model below this
+max_llm_calls = 40              # model calls per pass; past it the built-in recommender takes over
+max_llm_tokens = 250000         # model tokens (in + out, as the backend reports them) per pass
 [scribe.type_parent]            # issue type -> parent id
 bug = "proj-bugs"
 ```
@@ -226,6 +237,62 @@ A fuller example with synthetic ids: [`examples/scribe-policy.toml`](../examples
 
 Keep the policy file where producers cannot write (pass `--policy`); the default `<queue-dir>/policy.toml`
 is a convenience for single-user setups.
+
+## Performance, budget and `--timing`
+
+Per pass, `scribe run` and `scribe replay` do this (measured shape, not a promise):
+
+1. ONE `embead match` for every candidate (the model and vector cache load once: about 15-20 s for a
+   7,200-bead tracker, regardless of batch size). Replay needs no more: temporal fairness is a per-bead
+   filter over that one report.
+2. Recommendations run on a bounded thread pool, `--recommender-jobs N` (default 4, hard maximum 8, 1 = one
+   at a time). Only the recommender subprocesses overlap. Validation, execution, the tracker writes and the
+   log appends stay sequential in candidate order under the single run lock, so decisions are
+   deterministic and a create is never written twice. The per-call timeout is unchanged; a recommender that
+   crashes or times out is a `create` for that candidate only. The reference recommender's pre-filter
+   (`llm_min_similarity`) still answers without calling a model.
+3. In a LIVE run, a create can be a neighbor of a later candidate. After every create the later candidates
+   are marked stale and re-matched together in ONE call before the next one is processed; a recommendation
+   is only redone if the neighbor list actually changed. So live cost is one match call per create that has
+   a later candidate (the tail shrinks by one each time), while shadow runs and replays are always one call.
+   A failed batch falls back to per-candidate calls.
+
+`--timing` prints wall seconds, match seconds and calls, recommender seconds (summed over calls, so it can
+exceed wall), LLM calls made versus skipped by the pre-filter, and tokens with per-call averages
+(`--json` replay adds a `timing` object). Replay prints `replayed n/N (Ns elapsed)` on stderr and appends
+each decision to `log.jsonl` the moment it is made; an interrupted replay is resumed by running it again
+(already-replayed ids are skipped; a torn last line is ignored and never fused with the next row).
+
+Measured with the test fakes (10 beads, `embead` sleeping 1.0 s per call, recommender 0.5 s per call):
+
+| Run | wall | match calls |
+| --- | --- | --- |
+| before: per-candidate match, sequential recommend | about 15 s | 10 |
+| batch match, `--recommender-jobs 1` | 6.5 s | 1 |
+| batch match, `--recommender-jobs 4` | 2.7 s | 1 |
+| batch match, `--recommender-jobs 8` | 2.1 s | 1 |
+
+Expected real shape for one day (about 50 new beads): one match call (about 20 s) plus
+ceil(LLM calls / jobs) x about 20 s for the model. With the default 4 jobs and, say, 20 beads in the
+ambiguous similarity band that is about 20 s + 5 x 20 s, roughly 2 minutes, not an hour. The measured 6-bead
+replay took 5m46s before (about 1 minute per candidate).
+
+### Model budget
+
+Tens of thousands of tokens a day is fine; millions is not. Each pass has a hard budget: `--max-llm-calls N`
+and `--max-llm-tokens N` (or `max_llm_calls` and `max_llm_tokens` in the policy; defaults 40 and 250,000;
+0 means no model at all). Once either is spent, the remaining candidates skip the model and take the
+built-in recommender path. It is never silent: the log row says `recommender.budget_skipped`, the summary
+prints `budget: N candidate(s) skipped the model...`, and `--json` replay has `budget_skipped`. Notes:
+
+- Calls are reserved exactly before they start. Tokens are known only afterwards, so with `--recommender-jobs`
+  above 1 the token cap can be passed by the calls already in flight.
+- A candidate whose best neighbor is under `llm_min_similarity` reserves nothing (the model is not called
+  for it) and is not counted as skipped for budget.
+- The token cap needs a backend that reports usage; without it only the call cap bites, and `--timing`
+  says "the backend reported no token usage".
+- The budget is per pass (per `scribe run` poll, or per `replay`), not per day.
+- Which candidate sits on the cut-off can differ by one place when jobs > 1.
 
 ## Receipts and the log
 
