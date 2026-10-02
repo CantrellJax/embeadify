@@ -13,4 +13,8 @@ Initial scaffold.
   undo is a close.
 - `embeadify scribe submit|status|receipts|run|report`: bead-intake scribe, stage 1 (shadow mode by
   default, one executor, create as the fallback). See `docs/scribe.md`.
+- Scribe placement: created beads are placed by hint, source bead, similar neighbor, `type_parent`, then
+  `default_parent`, else flagged `unplaced` (listed by `scribe report`).
+- `embeadify-recommend`: opt-in reference LLM recommender (stdlib only, backend via `EMBEADIFY_LLM_CMD`,
+  strict validation, falls back to create). Example policy in `examples/scribe-policy.toml`.
 - `embeadify doctor`: `bd` presence, version, workspace, and the redacted write target.

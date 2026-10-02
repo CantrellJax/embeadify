@@ -115,7 +115,7 @@ embeadify scribe run --once --live --policy scribe.toml    # needs `live = true`
 One executor at a time. Anything unsure becomes a `create`; a self-declared P0 or `security` candidate is
 only ever created; a recommender (built-in, or your own command) never gets to run text. Neighbors come from
 [emBEADings](https://github.com/CantrellJax/embeadings) (`embead match`). Stage plan and every rule:
-[`docs/scribe.md`](docs/scribe.md). The decisions grammar also gained `create`.
+[`docs/scribe.md`](docs/scribe.md), which also covers placement and the opt-in `embeadify-recommend` LLM plug-in. The decisions grammar also gained `create`.
 
 ## Optional policy filters (plan only)
 

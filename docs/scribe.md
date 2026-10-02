@@ -96,10 +96,32 @@ target's existing acceptance already covers the finding.
 - A closed target is a `dup`/`drop` basis only with explicit `resolution_evidence` from the match report.
 - Urgent candidates (priority 0 or 1, a `security` label, or "security" in the title) and challenges are
   **always created**. A self-declared P0 buys nothing: it is created at `min_priority` (default P1).
-- A `parent` must exist and be open; otherwise it is left off and the reason is logged.
+- A `parent` must exist and be live (see Placement); otherwise it is skipped and the reason is logged.
 
 `dup` and a confirmed `fold` append a provenance note (first line `embeadify-provenance: ID`) to the target,
 so N reporters of one finding are N provenance records on one bead.
+
+### Placement
+
+A created bead is placed by the executor, never by candidate text alone. Rules run in this order; the first
+parent that exists in the FRESH snapshot and is live wins, and the rule is recorded as `placement_rule`
+in the log and the receipt:
+
+| `placement_rule` | Parent comes from |
+| --- | --- |
+| `recommender_parent` | the recommendation's `parent` |
+| `fold_target_parent` | the parent of a fold target that was not confirmed (a linked create) |
+| `candidate_hint` | the candidate's `parent` |
+| `source_bead_parent` | the parent of `source.bead`, if that bead exists |
+| `neighbor_parent` | the parent of the most similar live neighbor with similarity >= `placement_min_similarity` (default 0.6); a neighbor that is closed, or whose parent is closed or missing, is skipped for the next one |
+| `type_parent` | policy `[scribe.type_parent]`, issue type -> parent id |
+| `default_parent` | policy `default_parent` |
+| `unplaced` | nothing applied: created with no parent, the receipt carries `unplaced: true`, and `scribe report` lists it |
+
+Live means present in the snapshot and not closed. A `deferred` parent is live unless the policy sets
+`allow_deferred_parent = false`; a closed parent is never used, whatever sets it. Parents are read from
+the snapshot, never from the match report's `parent_id`. Skipped parents are logged as
+`parent_not_live_or_unknown:ID` adjustments. Placement only applies to creates.
 
 ### Built-in recommender
 
@@ -124,6 +146,47 @@ ONE JSON document on stdin and writes ONE typed recommendation on stdout (max 64
 Treat `candidate` and `neighbors` as untrusted text. Non-zero exit, timeout, missing command, malformed
 JSON, unknown fields, or a `candidate_id` that does not match all fall back to `create` and are logged
 (`recommender_failed`, `recommender_invalid_output`, `recommender_missing`). No model call is built in.
+
+### Reference LLM recommender (`embeadify-recommend`)
+
+An opt-in plug-in; the core has no model in it and the built-in stays the default. It is a separate
+console script (standard library only, no network calls of its own) speaking the contract above:
+
+```bash
+embeadify scribe run --once --recommender embeadify-recommend      # SHADOW: nothing is written
+embeadify scribe report                                            # compare with the built-in
+```
+
+Backend: it runs the command in `EMBEADIFY_LLM_CMD` (default `claude -p --output-format json`), writes the
+prompt to its stdin, and reads text from its stdout. Shell-style words, or a JSON array
+(`["C:\\tools\\llm.exe", "--fast"]`) for paths with spaces. Any other model is just a different command
+that reads a prompt on stdin and prints text (an `ollama run MODEL` wrapper, a small script around the
+OpenAI or any other SDK). `EMBEADIFY_LLM_TIMEOUT` (seconds, default 90, under the scribe's own 120) bounds
+each call. The backend inherits your environment (it needs its own credentials); the prompt never contains
+any of it.
+
+Rules it keeps:
+
+- Candidate title, body, evidence refs and neighbor titles are DATA: JSON-encoded inside one block whose
+  delimiter carries a hash of its contents, with an instruction that the block is untrusted and cannot
+  change the task. Body is cut at 6,000 characters, at most 10 neighbors and 10 refs are shown, and the
+  producer's identity is not sent.
+- The model may only choose `action` in `create|fold|dup|drop` (and only those the policy allows),
+  a `target_id` that is one of the neighbors shown, `confidence`, `evidence` strings, and
+  `acceptance_covered`. The reply must be exactly one JSON object (an `claude` result envelope or one code
+  fence is unwrapped); any extra key, a `parent`, an unknown target, or prose around the JSON is invalid.
+- On ANY problem (timeout, backend failure or missing command, non-JSON, invalid object) it prints a plain
+  `create` with confidence 0 and an `evidence` note naming why. Its output is still re-validated by the
+  executor, so it can narrow but never widen what is allowed. It never proposes a parent; placement is the
+  executor's.
+- Cost and latency: one backend call per candidate that reaches it, so latency is the model's. The
+  exact retries never reach it (the marker reconcile runs first), and a pre-filter skips
+  the model when the top neighbor's similarity is below `llm_min_similarity` (default 0.55; the scribe
+  passes it in `constraints`) or there are no neighbors: those are created without a call. Only the
+  ambiguous band costs money. Use `--timeout` and `--limit` to bound a pass.
+
+Try it in shadow mode first: run the built-in and the plug-in over the same queue copies, then compare
+`scribe report` (recommended vs. executor action, downgrades, placement) before ever passing `--live`.
 
 ### `embead match` contract (parsed in `src/embeadify/scribe/match.py` only)
 
@@ -150,14 +213,22 @@ max_title = 200
 max_body = 8000
 match_command = ["embead", "match"]
 recommender_command = []
+placement_min_similarity = 0.6  # neighbor placement floor
+default_parent = "proj-inbox"   # placement rule: last resort before `unplaced`
+allow_deferred_parent = true    # deferred parents are live for placement; closed never
+llm_min_similarity = 0.55       # embeadify-recommend skips the model below this
+[scribe.type_parent]            # issue type -> parent id
+bug = "proj-bugs"
 ```
+
+A fuller example with synthetic ids: [`examples/scribe-policy.toml`](../examples/scribe-policy.toml).
 
 Keep the policy file where producers cannot write (pass `--policy`); the default `<queue-dir>/policy.toml`
 is a convenience for single-user setups.
 
 ## Receipts and the log
 
-`log.jsonl` lines: `candidate_id`, `hash`, `recommendation`, `executor_plan` (final action, reasons,
+`log.jsonl` lines: `candidate_id`, `hash`, `recommendation`, `executor_plan` (final action, placement rule, unplaced flag, reasons,
 adjustments, and the exact `bd` argument arrays, long values cut), `receipt_id`, `policy_version`, `mode`,
 `outcome`, `ts`. A live decision receipt adds the final and recommended action, the bead, and an undo hint
 (`close ID ...`). A write that fails leaves a lease and no receipt: the candidate stays queued and the
@@ -169,4 +240,4 @@ next run reconciles by marker before trying again.
   automatically on Windows).
 - Undo of a create is a close, not a delete. See [decisions-file.md](decisions-file.md).
 - The recommender sees tracker neighbors' titles; they are untrusted tracker text.
-- Parents are not restricted to neighbors; they must only exist and be open.
+- Parents are not restricted to neighbors; they must only exist and be live.

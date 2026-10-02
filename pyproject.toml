@@ -30,6 +30,7 @@ dev = [
 
 [project.scripts]
 embeadify = "embeadify.cli:main"
+embeadify-recommend = "embeadify.llm_recommend:main"
 
 [project.urls]
 Homepage = "https://github.com/CantrellJax/embeadify"

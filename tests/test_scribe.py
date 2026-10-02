@@ -770,3 +770,202 @@ def test_report_summarises_actions_and_lists_downgrades(sx, monkeypatch, capsys)
 
 def test_runner_is_importable_and_summary_counts(sx):
     assert runner.Summary().applied == 0 and executor.MAX_NOTE > 0 and recommend.MAX_EVIDENCE > 0
+
+
+# ---- placement ---------------------------------------------------------------------------------
+
+
+def placement_issues(env):
+    """demo-* plus containers: pl-epic (open), pl-def (deferred), pl-dead (closed) and children of each."""
+
+    def issue(ident, status="open", parent=None):
+        return {"id": ident, "title": f"Synthetic {ident}", "status": status, "priority": 2, "labels": [],
+                "parent_id": parent, "comment_count": 0, "dependencies": []}  # fmt: skip
+
+    env.set_issues(
+        [
+            *env.issues().values(),
+            issue("pl-epic"),
+            issue("pl-def", "deferred"),
+            issue("pl-dead", "closed"),
+            issue("pl-kid", parent="pl-epic"),
+            issue("pl-def-kid", parent="pl-def"),
+            issue("pl-dead-kid", parent="pl-dead"),
+            issue("pl-other"),
+            issue("pl-closed-kid", "closed", parent="pl-epic"),
+        ]
+    )
+
+
+def placed(sx, cid):
+    (entry,) = [e for e in sx.log() if e["candidate_id"] == cid]
+    plan = entry["executor_plan"]
+    return plan["parent"], plan["placement_rule"], plan["unplaced"]
+
+
+def place_one(sx, monkeypatch, cid="p-1", neighbors=(), live=False, policy=(), **over):
+    placement_issues(sx.env)
+    fixture(sx, monkeypatch, {cid: list(neighbors)})
+    sx.write_policy(live=live, **dict(policy))
+    sx.submit(sx.candidate(cid, **over))
+    assert sx.run(live=live) == 0
+    return placed(sx, cid)
+
+
+def test_placement_a_valid_candidate_hint_wins(sx, monkeypatch):
+    got = place_one(sx, monkeypatch, parent="pl-other", source={"agent": "f", "bead": "pl-kid"},
+                    policy={"default_parent": "'pl-epic'"})  # fmt: skip
+    assert got == ("pl-other", "candidate_hint", False)
+
+
+def test_placement_b_source_bead_parent_when_there_is_no_valid_hint(sx, monkeypatch):
+    got = place_one(sx, monkeypatch, parent="pl-dead", source={"agent": "f", "bead": "pl-kid"})
+    assert got == ("pl-epic", "source_bead_parent", False)
+
+
+def test_placement_b_a_closed_or_missing_source_parent_is_skipped(sx, monkeypatch):
+    assert place_one(sx, monkeypatch, "p-1", source={"agent": "f", "bead": "pl-dead-kid"}) == (
+        None,
+        "unplaced",
+        True,
+    )
+    sx.submit(sx.candidate("p-2", source={"agent": "f", "bead": "gone-9"}))
+    assert sx.run() == 0
+    assert placed(sx, "p-2") == (None, "unplaced", True)
+
+
+def test_placement_c_the_parent_of_a_similar_live_neighbor(sx, monkeypatch):
+    got = place_one(sx, monkeypatch, neighbors=[neighbor("pl-kid", 0.7)])
+    assert got == ("pl-epic", "neighbor_parent", False)
+
+
+def test_placement_c_needs_the_similarity_floor_and_a_policy_can_move_it(sx, monkeypatch):
+    got = place_one(sx, monkeypatch, "p-1", neighbors=[neighbor("pl-kid", 0.59)])
+    assert got == (None, "unplaced", True)
+    sx.write_policy(live=False, placement_min_similarity=0.5)
+    sx.submit(sx.candidate("p-2"))
+    fixture(sx, monkeypatch, {"p-2": [neighbor("pl-kid", 0.59)]})
+    assert sx.run() == 0
+    assert placed(sx, "p-2") == ("pl-epic", "neighbor_parent", False)
+
+
+def test_placement_c_a_closed_parent_neighbor_is_skipped_for_the_next_one(sx, monkeypatch):
+    got = place_one(sx, monkeypatch, neighbors=[neighbor("pl-dead-kid", 0.9), neighbor("pl-kid", 0.7)])
+    assert got == ("pl-epic", "neighbor_parent", False)
+
+
+def test_placement_c_a_closed_neighbor_is_never_a_basis(sx, monkeypatch):
+    placement_issues(sx.env)
+    fixture(sx, monkeypatch, {"p-1": [neighbor("pl-closed-kid", 0.9, closed=True, evidence="fixed")]})
+    sx.submit(sx.candidate("p-1"))
+    assert sx.run() == 0
+    assert placed(sx, "p-1") == (None, "unplaced", True)
+
+
+def test_placement_neighbor_parent_comes_from_the_fresh_snapshot_not_the_report(sx, monkeypatch):
+    stale = neighbor("pl-other", 0.9)
+    stale["parent_id"] = "pl-epic"  # the match report claims a parent the tracker does not have
+    assert place_one(sx, monkeypatch, neighbors=[stale]) == (None, "unplaced", True)
+
+
+def test_placement_type_parent_then_default_parent(sx, monkeypatch):
+    policy = {"default_parent": "'pl-other'", "type_parent": "{bug = 'pl-epic'}"}
+    assert place_one(sx, monkeypatch, "p-1", policy=policy, type="bug") == ("pl-epic", "type_parent", False)
+    sx.submit(sx.candidate("p-2", type="task"))
+    assert sx.run() == 0
+    assert placed(sx, "p-2") == ("pl-other", "default_parent", False)
+
+
+def test_placement_never_uses_a_closed_or_missing_default_or_type_parent(sx, monkeypatch):
+    policy = {"default_parent": "'pl-dead'", "type_parent": "{bug = 'gone-9'}"}
+    assert place_one(sx, monkeypatch, "p-1", policy=policy, type="bug") == (None, "unplaced", True)
+    (entry,) = sx.log()
+    assert set(entry["executor_plan"]["adjustments"]) >= {
+        "parent_not_live_or_unknown:gone-9",
+        "parent_not_live_or_unknown:pl-dead",
+    }
+
+
+def test_placement_deferred_parent_is_live_unless_the_policy_says_otherwise(sx, monkeypatch):
+    got = place_one(sx, monkeypatch, "p-1", parent="pl-def")
+    assert got == ("pl-def", "candidate_hint", False)
+    sx.write_policy(live=False, allow_deferred_parent="false")
+    sx.submit(sx.candidate("p-2", parent="pl-def"))
+    assert sx.run() == 0
+    assert placed(sx, "p-2") == (None, "unplaced", True)
+    sx.submit(sx.candidate("p-3", source={"agent": "f", "bead": "pl-def-kid"}))
+    assert sx.run() == 0
+    assert placed(sx, "p-3") == (None, "unplaced", True)
+
+
+def test_unplaced_is_flagged_in_the_receipt_and_listed_by_report(sx, monkeypatch, capsys):
+    place_one(sx, monkeypatch, "p-1", live=True)
+    sx.submit(sx.candidate("p-2", parent="pl-epic"))
+    assert sx.run(live=True) == 0
+    assert sx.decisions()["p-1"]["unplaced"] is True
+    assert sx.decisions()["p-1"]["placement_rule"] == "unplaced"
+    assert not sx.decisions()["p-2"]["unplaced"]
+    assert sx.decisions()["p-2"]["placement_rule"] == "candidate_hint"
+    beads = {b["title"].split()[-1]: b["parent_id"] for b in sx.new_beads() if "finding" in b["title"]}
+    assert beads == {"p-1": None, "p-2": "pl-epic"}
+    capsys.readouterr()
+    assert main(["scribe", "report", "--queue-dir", str(sx.queue), "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["unplaced"] == ["p-1"] and data["placement"] == {"candidate_hint": 1, "unplaced": 1}
+    assert main(["scribe", "report", "--queue-dir", str(sx.queue)]) == 0
+    assert "unplaced creates (1):\n  p-1" in capsys.readouterr().out
+
+
+def test_placement_never_applies_to_a_dup_and_the_recommender_parent_still_comes_first(sx, monkeypatch):
+    placement_issues(sx.env)
+    fixture(sx, monkeypatch, {})
+    sx.recs({"q-1": rec("create", parent="pl-other")})
+    sx.write_policy(live=False, recommender=True, default_parent="'pl-epic'")
+    sx.submit(sx.candidate("q-1"))
+    assert sx.run() == 0
+    assert placed(sx, "q-1") == ("pl-other", "recommender_parent", False)
+
+
+def test_placement_policy_keys_are_validated(tmp_path):
+    good = tmp_path / "p.toml"
+    for text in (
+        "default_parent = 'bad id'",
+        "default_parent = 7",
+        "type_parent = {widget = 'x-1'}",
+        "type_parent = {bug = 'bad id'}",
+        "placement_min_similarity = 2",
+        "llm_min_similarity = 0",
+        "allow_deferred_parent = 'yes'",
+    ):
+        good.write_text("[scribe]\n" + text + "\n")
+        with pytest.raises(PolicyError):
+            load(good)
+    good.write_text("[scribe]\ndefault_parent = 'x-1'\ntype_parent = {bug = 'x-2'}\n")
+    pol = load(good)
+    assert (pol.default_parent, pol.type_parent, pol.placement_min_similarity) == ("x-1", {"bug": "x-2"}, 0.6)
+    assert pol.allow_deferred_parent is True and pol.llm_min_similarity == 0.55
+
+
+def test_the_example_policy_loads():
+    pol = load(HERE.parent / "examples" / "scribe-policy.toml")
+    assert pol.live is False and pol.default_parent == "example-inbox"
+    assert pol.type_parent["bug"] == "example-bugs"
+
+
+def test_reference_llm_recommender_end_to_end_through_the_scribe(sx, monkeypatch):
+    reply = sx.env.root / "llm-reply.txt"
+    monkeypatch.setenv("EMBEADIFY_LLM_CMD", json.dumps([sys.executable, str(HERE / "fake_llm.py")]))
+    monkeypatch.setenv("FAKE_LLM_REPLY_FILE", str(reply))
+    fixture(sx, monkeypatch, {"l-1": [neighbor("demo-4", 0.9)], "l-2": [neighbor("demo-4", 0.9)]})
+    words = [sys.executable, "-m", "embeadify.llm_recommend"]
+    sx.write_policy(recommender_command="[" + ", ".join(f"'{w}'" for w in words) + "]")
+    reply.write_text(json.dumps({"action": "fold", "target_id": "demo-4", "confidence": 0.95,
+                                 "evidence": ["demo-4 covers it"], "acceptance_covered": True}))  # fmt: skip
+    sx.submit(sx.candidate("l-1"))
+    assert sx.run(live=True) == 0
+    assert sx.decisions()["l-1"]["final_action"] == "fold" and sx.verbs() == ["update"]
+    reply.write_text(json.dumps({"action": "fold", "target_id": "demo-77", "confidence": 1,
+                                 "evidence": ["x"], "acceptance_covered": True}))  # fmt: skip
+    sx.submit(sx.candidate("l-2"))
+    assert sx.run(live=True) == 0
+    assert sx.decisions()["l-2"]["final_action"] == "create" and sx.verbs() == ["update", "create"]
