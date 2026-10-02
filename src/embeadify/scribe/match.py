@@ -84,7 +84,7 @@ def _neighbor(raw) -> Neighbor | None:
     )
 
 
-def parse_report(report, candidate_id: str) -> list[Neighbor]:
+def parse_report(report, candidate_id: str, cap: int = MAX_NEIGHBORS) -> list[Neighbor]:
     """Neighbors for one candidate from a decoded report. Raises ValueError on a wrong shape."""
     if (
         not isinstance(report, dict)
@@ -98,11 +98,19 @@ def parse_report(report, candidate_id: str) -> list[Neighbor]:
         raise ValueError("report has no entry for this candidate")
     neighbors = [n for n in map(_neighbor, mine[0].get("neighbors") or []) if n is not None]
     neighbors.sort(key=lambda n: (-n.similarity, n.issue_id))
-    return neighbors[:MAX_NEIGHBORS]
+    return neighbors[:cap]
 
 
-def fetch(candidate: dict, command: tuple[str, ...], timeout: float = 120.0) -> tuple[list[Neighbor], str]:
-    """(neighbors, degraded reason). The reason is empty when the matcher ran and its report parsed."""
+def fetch(
+    candidate: dict,
+    command: tuple[str, ...],
+    timeout: float = 120.0,
+    limit: int | None = None,
+) -> tuple[list[Neighbor], str]:
+    """(neighbors, degraded reason). The reason is empty when the matcher ran and its report parsed.
+
+    ``limit`` (replay only) asks the matcher for that many neighbors with `--limit N` and keeps that many.
+    """
     line = {
         "candidate_id": candidate["candidate_id"],
         "title": sanitize.clean_line(candidate["title"], PAYLOAD_TITLE),
@@ -112,6 +120,8 @@ def fetch(candidate: dict, command: tuple[str, ...], timeout: float = 120.0) -> 
         path = Path(tmp) / "candidates.jsonl"
         path.write_text(json.dumps(line) + "\n", encoding="utf-8")
         argv = [*command, "--candidates-file", str(path), "--json"]
+        if limit is not None:
+            argv += ["--limit", str(limit)]
         try:
             done = subprocess.run(
                 argv,
@@ -133,6 +143,6 @@ def fetch(candidate: dict, command: tuple[str, ...], timeout: float = 120.0) -> 
     if len(done.stdout) > MAX_REPORT_BYTES:
         return [], "embead_bad_output: report too large"
     try:
-        return parse_report(json.loads(done.stdout), candidate["candidate_id"]), ""
+        return parse_report(json.loads(done.stdout), candidate["candidate_id"], limit or MAX_NEIGHBORS), ""
     except ValueError as error:
         return [], f"embead_bad_output: {error}"
