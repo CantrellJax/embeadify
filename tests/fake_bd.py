@@ -16,21 +16,17 @@ import sys
 import time
 from pathlib import Path
 
+from locked_append import append_line, lock, unlock
+
 DB = Path(os.environ["FAKE_BD_DB"])
-LOCK = DB.with_suffix(".lock")
 
 
 def acquire():
-    while True:
-        try:
-            return os.open(LOCK, os.O_CREAT | os.O_EXCL)
-        except FileExistsError:
-            time.sleep(0.005)
+    return lock(str(DB))
 
 
-def release(fd):
-    os.close(fd)
-    os.unlink(LOCK)
+def release(held):
+    unlock(held)
 
 
 def load():
@@ -44,15 +40,13 @@ def save(data):
 def log(line):
     path = os.environ.get("FAKE_BD_LOG")
     if path:
-        with open(path, "a") as handle:
-            handle.write(f"{line} {time.time():.4f}\n")
+        append_line(path, f"{line} {time.time():.4f}")
 
 
 def record_call(args):
     path = os.environ.get("FAKE_BD_CALLS")
     if path:
-        with open(path, "a") as handle:
-            handle.write(json.dumps(args) + "\n")
+        append_line(path, json.dumps(args))
 
 
 def flag(args, name):
