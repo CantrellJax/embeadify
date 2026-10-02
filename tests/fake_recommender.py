@@ -1,7 +1,7 @@
 """A synthetic LLM recommender: reads one JSON on stdin, prints a typed recommendation.
 
-FAKE_REC_FILE maps candidate_id -> recommendation object (candidate_id is filled in). FAKE_REC_RAW prints
-that text verbatim instead. FAKE_REC_FAIL exits 1. Every stdin payload is appended to FAKE_REC_SEEN.
+FAKE_REC_FILE maps candidate_id -> recommendation object (candidate_id is filled in). FAKE_REC_RAW_FILE prints
+that file verbatim instead. FAKE_REC_FAIL exits 1. Every stdin payload is appended to FAKE_REC_SEEN.
 """
 
 import json
@@ -15,8 +15,8 @@ if os.environ.get("FAKE_REC_SEEN"):
         handle.write(json.dumps(payload) + "\n")
 if os.environ.get("FAKE_REC_FAIL"):
     sys.exit(1)
-if os.environ.get("FAKE_REC_RAW") is not None:
-    print(os.environ["FAKE_REC_RAW"])
+if os.environ.get("FAKE_REC_RAW_FILE"):
+    sys.stdout.write(Path(os.environ["FAKE_REC_RAW_FILE"]).read_text())
     sys.exit(0)
 cid = payload["candidate"]["candidate_id"]
 table = json.loads(Path(os.environ["FAKE_REC_FILE"]).read_text())

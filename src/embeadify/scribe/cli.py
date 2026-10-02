@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import sys
 from collections import Counter
@@ -198,7 +199,11 @@ def cmd_run(args) -> int:
         return _err(
             "refusing --live: the policy file does not set `live = true` (shadow mode is the default)"
         )
-    recommender = tuple(shlex.split(args.recommender)) if args.recommender else policy.recommender_command
+    recommender = (
+        tuple(shlex.split(args.recommender, posix=os.name != "nt"))
+        if args.recommender
+        else policy.recommender_command
+    )
     try:
         if args.live:
             report = doctor.inspect()

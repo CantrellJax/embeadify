@@ -1,12 +1,19 @@
 import json
 import os
 import stat
+import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
+from embeadify import bd as bd_module
+
 FAKE = Path(__file__).parent / "fake_bd.py"
+# cmd.exe cannot carry multi-line or `=`/`&`/`%` arguments, so on Windows (or with EMBEADIFY_TEST_PYSHIM=1)
+# a marker file is found on PATH like a real `bd`, and the subprocess call is redirected to the Python fake.
+PYSHIM = os.name == "nt" or bool(os.environ.get("EMBEADIFY_TEST_PYSHIM"))
 for name in list(os.environ):
     if name.startswith(("BEADS_", "BD_", "FAKE_BD")):
         os.environ.pop(name)
@@ -44,10 +51,20 @@ class Env:
         self.mp = monkeypatch
         self.log = root / "writes.log"
         self.set_issues(demo_issues())
-        if os.name == "nt":
-            (self.bin / "bd.cmd").write_text(f'@"{sys.executable}" "{FAKE}" %*\n')
+        shim = self.bin / ("bd.cmd" if os.name == "nt" else "bd")
+        if PYSHIM:
+            shim.write_text("marker: redirected to fake_bd.py by tests/conftest.py\n")
+            shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+            real_run = subprocess.run
+
+            def redirected(argv, *args, **kwargs):
+                if os.path.normcase(str(argv[0])) == os.path.normcase(str(shim)):
+                    argv = [sys.executable, str(FAKE), *argv[1:]]
+                return real_run(argv, *args, **kwargs)
+
+            patched = types.SimpleNamespace(**{**vars(subprocess), "run": redirected})
+            monkeypatch.setattr(bd_module, "subprocess", patched)
         else:
-            shim = self.bin / "bd"
             shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n')
             shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         monkeypatch.setenv("PATH", str(self.bin) + os.pathsep + os.environ["PATH"])

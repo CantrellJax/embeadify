@@ -3,7 +3,6 @@
 import json
 import os
 import socket
-import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -20,14 +19,6 @@ from embeadify.scribe.policy import Policy, PolicyError, load
 HERE = Path(__file__).parent
 
 
-def shim(path: Path, script: Path):
-    if os.name == "nt":
-        path.with_suffix(".cmd").write_text(f'@"{sys.executable}" "{script}" %*\n')
-    else:
-        path.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
-        path.chmod(path.stat().st_mode | stat.S_IEXEC)
-
-
 class Scribe:
     def __init__(self, env, monkeypatch):
         self.env, self.mp = env, monkeypatch
@@ -35,25 +26,30 @@ class Scribe:
         self.policy_path = env.root / "policy.toml"
         # Hermetic: only the shims are on PATH, so a real `embead` can never be picked up.
         monkeypatch.setenv("PATH", str(env.bin))
-        self.embead(True)
+        self.embead_present = True
         self.rec_file = env.root / "recs.json"
-        shim(env.bin / "recommender", HERE / "fake_recommender.py")
         monkeypatch.setenv("FAKE_REC_FILE", str(self.rec_file))
         monkeypatch.setenv("FAKE_REC_SEEN", str(env.root / "rec-seen.jsonl"))
         self.write_policy()
 
     def embead(self, present: bool):
-        target = self.env.bin / "embead"
-        if present:
-            shim(target, HERE / "fake_embead.py")
-        else:
-            target.unlink(missing_ok=True)
+        self.embead_present = present
+        live, recommender, extra = self.last
+        self.write_policy(live, recommender, **extra)
+
+    def match_command(self):
+        # An explicit argv (no .cmd shim): portable to Windows, and a real `embead` on PATH is never used.
+        if self.embead_present:
+            return [sys.executable, str(HERE / "fake_embead.py"), "match"]
+        return [str(self.env.root / "no-such-embead")]
 
     def recs(self, table: dict):
         self.rec_file.write_text(json.dumps(table))
 
     def write_policy(self, live=True, recommender=False, **extra):
+        self.last = (live, recommender, dict(extra))
         lines = ["[scribe]", f"live = {str(live).lower()}", 'policy_version = "test-1"']
+        lines.append("match_command = [" + ", ".join(f"'{w}'" for w in self.match_command()) + "]")
         if recommender:
             lines.append(f"recommender_command = ['{sys.executable}', '{HERE / 'fake_recommender.py'}']")
         lines += [f"{k} = {v}" for k, v in extra.items()]
@@ -520,11 +516,13 @@ def test_parent_must_be_live_and_exist_else_it_is_dropped_from_the_create(sx, mo
         '{"candidate_id": "bad-1", "action": "dup", "target_id": "demo-4 close demo-5", "confidence": 1}',
         '{"candidate_id": "bad-1", "action": "create", "confidence": 5}',
         '{"candidate_id": "bad-1", "action": "create", "confidence": 1, "shell": "rm -rf /"}',
-        "x" * 200_000,
+        "x" * 70_000,
     ],
 )
 def test_invalid_recommender_output_falls_back_to_create(sx, monkeypatch, raw):
-    monkeypatch.setenv("FAKE_REC_RAW", raw)
+    raw_file = sx.env.root / "raw.txt"
+    raw_file.write_text(raw)
+    monkeypatch.setenv("FAKE_REC_RAW_FILE", str(raw_file))
     sx.write_policy(recommender=True)
     sx.submit(sx.candidate("bad-1"))
     assert sx.run(live=True) == 0

@@ -39,7 +39,21 @@ class Submission:
 
 def _alive(pid: int) -> bool:
     if os.name == "nt":
-        return True  # never guess on Windows: a stale lock must be removed by hand
+        import ctypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: the process exists
+        try:
+            code = ctypes.c_ulong()
+            return (
+                bool(kernel.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code)))
+                and code.value == 259
+            )
+        finally:
+            kernel.CloseHandle(ctypes.c_void_p(handle))
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -76,11 +90,13 @@ class Queue:
             "submitted_at": now(),
             "candidate": candidate,
         }
-        fd, tmp = tempfile.mkstemp(dir=self.submissions_dir, prefix=".tmp-", suffix=".json")
+        fd, tmp = tempfile.mkstemp(dir=self.root, prefix=".tmp-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle, sort_keys=True, indent=2)
         try:
             os.link(tmp, final)  # atomic, and refuses to replace an existing file
+            os.unlink(tmp)  # before the chmod: on Windows the two names share one read-only attribute
+            tmp = ""
             os.chmod(final, 0o444)
             return rid, digest, True
         except FileExistsError:
@@ -92,7 +108,8 @@ class Queue:
                 f"(stored hash {existing.hash[:12]}, new hash {digest[:12]}); use a new candidate_id"
             ) from None
         finally:
-            os.unlink(tmp)
+            if tmp:
+                os.unlink(tmp)
 
     def _load(self, path: Path) -> Submission:
         sub = Submission(path=path)
@@ -169,8 +186,6 @@ class Queue:
                     pid = 0
                 if pid and _alive(pid):
                     raise LockHeld(f"another scribe run holds {path} (pid {pid})") from None
-                if os.name == "nt" and pid:
-                    raise LockHeld(f"{path} exists; remove it by hand if no run is active") from None
                 path.unlink(missing_ok=True)  # stale: its owner is gone
         else:
             raise LockHeld(f"could not take {path}")
