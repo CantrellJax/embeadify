@@ -28,3 +28,13 @@ chore = "example-maintenance"
 # Reference LLM recommender (see docs/scribe.md): skipped below this top-neighbor similarity.
 # To use it: scribe run --recommender embeadify-recommend
 # llm_min_similarity = 0.80  # just under the executor floor; lower only buys tuning data, at token cost
+
+# Owner rules (docs/scribe.md "Owner rules"). Every list REPLACES its default, so copy the default and
+# add to it; a wider list only ever creates more beads, never drops one.
+# sensitive_keywords = ["prod", "published schedule", "billing", "payment", "privacy", "security"]
+# sensitive_labels = ["security", "privacy", "prod", "billing"]
+# owner_labels = ["owner-run", "owner-decision", "ask:owner", "human", "questions", "needs-clay"]
+# owner_types = ["decision"]
+# hold_phrases = ["close only on prod evidence", "awaiting schema_migrations"]
+# chiefs_questions_epic = "example-chief-questions"   # unset: chief questions become decision beads
+# self_names = ["embeadify-scribe"]                   # `scribe submit` refuses these sources

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass, field, replace
 
 from . import bd, sanitize
 
@@ -21,12 +22,31 @@ class State:
     title: str = ""
     comment_count: int | None = None
     markers: set[str] = field(default_factory=set)  # `candidate:ID` / `provenance:ID`
+    assignee: str = ""  # who holds it (the scribe's owner-routing guards read this, never write it)
+    issue_type: str = ""
+    notes: str = ""  # capped: the guards only look for phrases such as "close only on prod evidence"
+    description: str = ""  # capped, same reason
+    owner_summary: str = ""  # bead metadata key `owner_summary`, READ ONLY context (capped at 400)
 
     def watch(self) -> tuple:
         return (self.status, self.parent, self.priority, tuple(sorted(self.labels)))
 
 
 Snapshot = dict[str, State]
+
+TEXT_CAP = 8000
+OWNER_SUMMARY_CAP = 400
+
+
+def _owner_summary(metadata) -> str:
+    """The bead metadata key `owner_summary` as one capped line (metadata: an object or a JSON string)."""
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            return ""
+    value = metadata.get("owner_summary") if isinstance(metadata, dict) else None
+    return " ".join(value.split())[:OWNER_SUMMARY_CAP] if isinstance(value, str) else ""
 
 
 def _priority(value) -> int | None:
@@ -67,6 +87,11 @@ def parse(raw) -> Snapshot:
             title=" ".join(str(item.get("title") or "").split()),
             comment_count=_priority(item.get("comment_count")),
             markers=sanitize.find_markers(item.get("description"), item.get("notes")),
+            assignee=" ".join(str(item.get("assignee") or "").split()),
+            issue_type=str(item.get("issue_type") or ""),
+            notes=str(item.get("notes") or "")[:TEXT_CAP],
+            description=str(item.get("description") or "")[:TEXT_CAP],
+            owner_summary=_owner_summary(item.get("metadata")),
         )
     return snap
 
@@ -77,17 +102,7 @@ def take() -> Snapshot:
 
 def clone(snap: Snapshot) -> Snapshot:
     return {
-        k: State(
-            v.id,
-            v.status,
-            v.parent,
-            v.priority,
-            set(v.labels),
-            set(v.blocks),
-            v.title,
-            v.comment_count,
-            set(v.markers),
-        )
+        k: replace(v, labels=set(v.labels), blocks=set(v.blocks), markers=set(v.markers))
         for k, v in snap.items()
     }
 

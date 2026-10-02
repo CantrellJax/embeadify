@@ -53,8 +53,12 @@ def _neighbors(row: dict) -> list[Neighbor]:
     ]
 
 
-def _snapshot(neighbors: list[Neighbor]) -> snapshot.Snapshot:
-    """The tracker as far as the log shows it: each neighbor, and each neighbor's parent when live/closed."""
+def _snapshot(neighbors: list[Neighbor], facts: dict | None = None) -> snapshot.Snapshot:
+    """The tracker as far as the log shows it: each neighbor, and each neighbor's parent when live/closed.
+
+    ``facts`` is the log row's `target_facts` (labels, assignee, notes of the recommended target), so the
+    owner-routing guards re-judge the way they did when the row was logged.
+    """
     snap: snapshot.Snapshot = {}
 
     def put(ident, status, parent=None):
@@ -65,6 +69,11 @@ def _snapshot(neighbors: list[Neighbor]) -> snapshot.Snapshot:
     for n in neighbors:
         if n.parent_id and n.parent_status in ("live", "closed"):
             put(n.parent_id, "open" if n.parent_status == "live" else "closed")
+    if facts and facts.get("id") in snap:
+        state = snap[facts["id"]]
+        state.labels = {str(x) for x in facts.get("labels") or []}
+        for key in ("status", "assignee", "issue_type", "notes", "description", "title"):
+            setattr(state, key, str(facts.get(key) or ""))
     return snap
 
 
@@ -74,7 +83,11 @@ def decide(row: dict, policy: Policy) -> tuple[executor.Plan, bool]:
     c = cand.validate({**row["candidate"], "body": row["candidate"].get("body", "")})
     neighbors = _neighbors(row)
     rec = Recommendation(
-        **{**row["recommendation"], "evidence": tuple(row["recommendation"].get("evidence", []))}
+        **{
+            **row["recommendation"],
+            "evidence": tuple(row["recommendation"].get("evidence", [])),
+            "searched_sources": tuple(row["recommendation"].get("searched_sources", [])),
+        }
     )
     unknowable = False
     kind = (row.get("recommender") or {}).get("kind")
@@ -84,7 +97,7 @@ def decide(row: dict, policy: Policy) -> tuple[executor.Plan, bool]:
             rec = fallback(c["candidate_id"], policy)  # the pre-filter would skip the model
         elif not row["recommender"].get("model_called"):
             unknowable = True
-    return executor.plan(c, rec, neighbors, _snapshot(neighbors), policy), unknowable
+    return executor.plan(c, rec, neighbors, _snapshot(neighbors, row.get("target_facts")), policy), unknowable
 
 
 def usable(rows: dict, labels: dict) -> list[tuple[dict, str, str]]:

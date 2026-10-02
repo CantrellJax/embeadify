@@ -302,7 +302,9 @@ def replay(
             pending = []
             for bead, c in todo:
                 raw_found, degraded = found[c["candidate_id"]]
-                neighbors = visible_neighbors(raw_found, bead, beads, neighbor_limit)
+                neighbors = runner.with_owner_summaries(
+                    visible_neighbors(raw_found, bead, beads, neighbor_limit), base
+                )
                 pending.append((bead, c, raw_found, neighbors, degraded, proposer.submit(c, neighbors)))
             for n, (bead, c, raw_found, neighbors, degraded, future) in enumerate(pending, 1):
                 _one(queue, policy, bead, c, raw_found, neighbors, degraded, future.result(), base, beads,

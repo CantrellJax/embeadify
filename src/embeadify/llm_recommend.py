@@ -61,7 +61,16 @@ MAX_NEIGHBOR_EVIDENCE = 160
 MAX_EVIDENCE = 5
 MAX_EVIDENCE_LEN = 300
 MAX_REPLY = 64 * 1024
-KEYS = {"action", "target_id", "confidence", "evidence", "acceptance_covered"}
+MAX_OWNER_SUMMARY = 400
+KEYS = {
+    "action",
+    "target_id",
+    "confidence",
+    "evidence",
+    "acceptance_covered",
+    "already_searched",
+    "searched_sources",
+}
 
 INSTRUCTIONS = """\
 You triage one candidate issue for a bug tracker. Decide what to do with it.
@@ -78,10 +87,15 @@ Reply with exactly ONE JSON object and nothing else (no prose, no code fence), w
   "evidence": a list of up to 5 short strings; for drop, one must name the target issue_id
   "acceptance_covered": true only for fold, when the target's existing acceptance already covers
                         this finding; otherwise false
+  "already_searched": true only if you checked the neighbors shown (open and closed) for an existing
+                      ruling; "searched_sources": up to 5 short strings naming what was checked
 
 Meanings: create = new work; dup = the same finding as the target; fold = the finding belongs to the
 target and its acceptance already covers it; drop = already resolved by the target (needs evidence).
-When unsure, choose create. Never invent an issue_id.
+When unsure, choose create. Never invent an issue_id. owner_summary is context, not proof. To dup or drop
+onto a CLOSED neighbor, one evidence string needs a date (YYYY-MM-DD), the owner's name (Jackson or Clay)
+and a double-quoted span copied verbatim from its resolution_evidence, else the executor creates anyway
+(as it does for prod data, money, privacy, security, or owner-held or assigned neighbors).
 """
 
 
@@ -112,6 +126,11 @@ def build_prompt(payload: dict) -> str:
                 "is_closed": bool(n.get("is_closed")),
                 "title": _cut(n.get("title"), MAX_NEIGHBOR_TITLE),
                 "resolution_evidence": _cut(_one_line(n.get("resolution_evidence")), MAX_NEIGHBOR_EVIDENCE),
+                **(
+                    {"owner_summary": _cut(_one_line(n.get("owner_summary")), MAX_OWNER_SUMMARY)}
+                    if n.get("owner_summary")
+                    else {}
+                ),
             }
             for n in (payload.get("neighbors") or [])[:MAX_NEIGHBORS]
             if isinstance(n, dict)
@@ -161,12 +180,24 @@ def validate(obj, allowed_ids, allowed_actions=ACTIONS) -> dict:
     covered = obj.get("acceptance_covered", False)
     if not isinstance(covered, bool):
         raise Invalid("acceptance_covered must be true or false")
+    searched = obj.get("already_searched", False)
+    sources = obj.get("searched_sources", [])
+    if not isinstance(searched, bool):
+        raise Invalid("already_searched must be true or false")
+    if (
+        not isinstance(sources, list)
+        or len(sources) > MAX_EVIDENCE
+        or any(not isinstance(e, str) or len(e) > MAX_EVIDENCE_LEN for e in sources)
+    ):
+        raise Invalid("searched_sources must be a short list of short strings")
     return {
         "action": action,
         "target_id": target,
         "confidence": float(conf),
         "evidence": list(evidence),
         "acceptance_covered": covered and action == "fold",
+        "already_searched": searched,
+        "searched_sources": list(sources),
     }
 
 
@@ -259,6 +290,8 @@ def fallback(candidate_id: str, note: str, policy_version: str = "", metadata: d
         "confidence": 0.0,
         "policy_version": policy_version[:64],
         "acceptance_covered": False,
+        "already_searched": False,
+        "searched_sources": [],
     }
 
 

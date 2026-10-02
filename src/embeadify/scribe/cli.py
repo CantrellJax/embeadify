@@ -55,6 +55,12 @@ def cmd_submit(args) -> int:
             print(f"embeadify scribe: {args.file}: {line}", file=sys.stderr)
         return EXIT_ERROR
     try:
+        policy = _policy(args, _queue(args))
+    except PolicyError as error:
+        return _err(str(error))
+    if reason := cand.self_trigger_reason(candidate, policy.self_names):
+        return _err(f"{args.file}: rejected: {reason}; the scribe never reacts to its own events")
+    try:
         rid, digest, new = _queue(args).submit(candidate)
     except st.Conflict as error:
         return _err(f"conflict: {error}")
@@ -96,6 +102,29 @@ def _state(queue: st.Queue, sub: st.Submission, latest: dict) -> tuple[str, str,
             return "failed", plan.get("action", ""), ""
         return "shadowed", plan.get("action", ""), entry.get("bead_id") or ""
     return "queued", "", ""
+
+
+def cmd_routes(args) -> int:
+    queue = _queue(args)
+    for rid in args.ack or []:
+        known = {r["receipt_id"] for r in queue.routes()}
+        if rid not in known:
+            return _err(f"no route on receipt {rid}")
+        queue.ack_route(rid)
+    rows = [r for r in queue.routes() if args.all or r["pending"]]
+    if args.json:
+        print(json.dumps(rows, sort_keys=True))
+    else:
+        for r in rows:
+            brief = r["hub_brief"]
+            print(
+                f"{r['receipt_id']}  {r['route']}  ref {brief.get('ref') or '-'}  "
+                f"theme {brief.get('theme') or '-'}  {brief['title']}"
+                + ("" if r["pending"] else "  [posted]")
+            )
+        if not rows:
+            print("no pending routes")
+    return EXIT_OK
 
 
 def cmd_status(args) -> int:
@@ -154,7 +183,9 @@ def cmd_report(args) -> int:
     degraded = []
     unplaced = []
     placed = Counter()
+    guarded = Counter()
     for entry in latest.values():
+        guarded.update(entry.get("guards") or [])
         plan = entry.get("executor_plan") or {}
         rec = entry.get("recommendation") or {}
         final[plan.get("action", "?")] += 1
@@ -183,6 +214,7 @@ def cmd_report(args) -> int:
         "degraded": degraded,
         "placement": dict(sorted(placed.items())),
         "unplaced": unplaced,
+        "guard_forced_create": dict(sorted(guarded.items())),
     }
     if args.json:
         print(json.dumps(data, sort_keys=True))
@@ -194,6 +226,7 @@ def cmd_report(args) -> int:
     for d in downgraded:
         print(f"  {d['candidate_id']}: {d['recommended']} -> {d['final']}  [{', '.join(d['reasons'])}]")
     print("placement:   " + (", ".join(f"{k} {v}" for k, v in sorted(placed.items())) or "none"))
+    print("guard_forced_create: " + (", ".join(f"{k} {v}" for k, v in sorted(guarded.items())) or "none"))
     print(f"unplaced creates ({len(unplaced)}):")
     for cid in unplaced:
         print(f"  {cid}")
@@ -497,12 +530,21 @@ def add_parsers(sub) -> None:
 
     p = ssub.add_parser("submit", help="validate a candidate JSON file and queue it (immutable)")
     p.add_argument("file", help="candidate JSON file, or - for stdin")
+    p.add_argument("--policy", help="policy TOML for self_names (default <queue-dir>/policy.toml if present)")
     common(p)
     p.set_defaults(func=cmd_submit)
 
     p = ssub.add_parser("status", help="queue counts and run-lock state")
     common(p)
     p.set_defaults(func=cmd_status)
+
+    p = ssub.add_parser(
+        "routes", help="owner-queue routes the scribe recorded; an operator posts them (never the scribe)"
+    )
+    common(p)
+    p.add_argument("--all", action="store_true", help="include routes already acknowledged as posted")
+    p.add_argument("--ack", action="append", metavar="RECEIPT", help="mark a route as posted (repeatable)")
+    p.set_defaults(func=cmd_routes)
 
     p = ssub.add_parser("receipts", help="one line per submission: receipt, state, action, bead")
     common(p)

@@ -61,7 +61,12 @@ MAX_CREATE_BODY = 8000
 
 
 def create_argv(
-    title: str, type_: str, priority: int | str, parent: str | None, description: str
+    title: str,
+    type_: str,
+    priority: int | str,
+    parent: str | None,
+    description: str,
+    labels: list[str] | None = None,
 ) -> list[str]:
     """The one place a `bd create` argument array is built. Every value is a single `--flag=value` word."""
     argv = [
@@ -72,6 +77,8 @@ def create_argv(
         f"--description={description}",
         "--json",
     ]
+    if labels:
+        argv.append("--labels=" + ",".join(labels))
     if parent:
         # bd copies the parent's labels onto a child unless told not to (a stray 'theme' label leaked onto
         # 13 real beads); labels are always set explicitly, never inherited.

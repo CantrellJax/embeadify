@@ -21,3 +21,7 @@ Initial scaffold.
   `label` (append-only `labels.jsonl`), `metrics`, `tune` (offline threshold grid, never edits policy). Shadow log
   rows now also record `candidate`, `recommender`, `thresholds`. See `docs/scribe-trainee.md`.
 - `embeadify doctor`: `bd` presence, version, workspace, and the redacted write target.
+- Scribe owner rules: the executor never folds, drops or dups candidates or targets that touch prod data,
+  money, privacy or security, are claimed or owner-held, or close only on evidence; a closed neighbor needs
+  a dated owner quote; question candidates are routed (`kind`, `scribe routes`); the scribe refuses its own
+  events at submit; `guard_forced_create` is counted per guard. See `docs/scribe.md` "Owner rules".

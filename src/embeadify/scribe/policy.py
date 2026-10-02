@@ -10,6 +10,53 @@ from ..decisions import CREATE_TYPES
 from ..sanitize import is_id
 
 ACTIONS = ("create", "fold", "dup", "drop")
+# Owner-routing guards (docs/scribe.md "Owner rules"). Every list is policy-configurable; a match only ever
+# forces a create or a route, never a suppression, so a longer list is always the safe direction.
+SENSITIVE_KEYWORDS = (
+    "prod",
+    "production",
+    "published schedule",
+    "published schedules",
+    "money",
+    "billing",
+    "invoice",
+    "payment",
+    "refund",
+    "privacy",
+    "pii",
+    "phi",
+    "hipaa",
+    "gdpr",
+    "patient data",
+    "customer data",
+    "security",
+    "secret",
+    "credential",
+    "password",
+    "vulnerability",
+)
+SENSITIVE_LABELS = (
+    "security",
+    "privacy",
+    "prod",
+    "production",
+    "money",
+    "billing",
+    "phi",
+    "pii",
+    "prod-data",
+    "published-schedule",
+)
+OWNER_LABELS = (
+    "owner-run",
+    "owner-decision",
+    "ask:owner",
+    "human",
+    "questions",
+    "needs-clay",
+    "needs-night-ruling",
+)
+HOLD_PHRASES = ("close only on prod evidence", "awaiting schema_migrations")
 
 
 class PolicyError(Exception):
@@ -38,6 +85,13 @@ class Policy:
     )
     max_llm_calls: int = 40  # per pass: past this, candidates skip the model and take the built-in path
     max_llm_tokens: int = 250_000  # per pass, input + output as the backend reports them
+    sensitive_keywords: tuple[str, ...] = SENSITIVE_KEYWORDS  # title/body/labels/target: only create or route
+    sensitive_labels: tuple[str, ...] = SENSITIVE_LABELS
+    owner_labels: tuple[str, ...] = OWNER_LABELS  # a target carrying one is never folded or dropped
+    owner_types: tuple[str, ...] = ("decision",)  # nor a target of one of these issue types
+    hold_phrases: tuple[str, ...] = HOLD_PHRASES  # target notes/description saying it closes only on evidence
+    chiefs_questions_epic: str | None = None  # chief questions: a note on this epic, else a decision bead
+    self_names: tuple[str, ...] = ("embeadify-scribe",)  # `scribe submit` refuses candidates from these
 
 
 def llm_floor_note(policy: Policy) -> str | None:
@@ -97,6 +151,13 @@ def load(path: Path | None) -> Policy:
         "llm_min_similarity": float,
         "max_llm_calls": int,
         "max_llm_tokens": int,
+        "sensitive_keywords": "strs",
+        "sensitive_labels": "strs",
+        "owner_labels": "strs",
+        "owner_types": "strs",
+        "hold_phrases": "strs",
+        "chiefs_questions_epic": "id",
+        "self_names": "strs",
     }
     if unknown := sorted(set(table) - set(known)):
         raise PolicyError(f"unknown policy keys: {', '.join(unknown)}")
@@ -106,7 +167,16 @@ def load(path: Path | None) -> Policy:
         if bad:
             raise PolicyError(f"unknown actions in allowed_actions: {', '.join(sorted(bad))}")
         values["allowed_actions"] = tuple(dict.fromkeys(["create", *values["allowed_actions"]]))
-    for key in ("match_command", "recommender_command"):
+    for key in (
+        "match_command",
+        "recommender_command",
+        "sensitive_keywords",
+        "sensitive_labels",
+        "owner_labels",
+        "owner_types",
+        "hold_phrases",
+        "self_names",
+    ):
         if key in values:
             values[key] = tuple(values[key])
     if values.get("min_priority", 1) > 4 or not 1 <= values.get("max_title", 200) <= 500:

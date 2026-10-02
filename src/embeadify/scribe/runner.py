@@ -5,9 +5,10 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-from .. import engine, snapshot
+from .. import bd, engine, snapshot
+from . import candidate as cand
 from . import executor, match, recommend
 from . import store as st
 from .policy import Policy
@@ -287,7 +288,13 @@ def decide(
         },
         "neighbors": [n.to_dict() for n in neighbors],
         "degraded": degraded or None,
+        "guards": plan.guards,
+        "target_facts": target_facts(snap, rec.target_id),
         "executor_plan": {
+            "kind": plan.kind,
+            "guards": plan.guards,
+            "flags": plan.flags,
+            "route": plan.route,
             "action": plan.action,
             "target_id": plan.target_id,
             "parent": plan.parent,
@@ -302,6 +309,23 @@ def decide(
     return rec, plan, fields
 
 
+def target_facts(snap, target_id: str | None) -> dict | None:
+    """What the guards saw on the recommended target, so `scribe tune` re-judges the row the same way."""
+    if not target_id or target_id not in snap:
+        return None
+    s = snap[target_id]
+    return {
+        "id": s.id,
+        "status": s.status,
+        "assignee": s.assignee,
+        "issue_type": s.issue_type,
+        "labels": sorted(s.labels),
+        "title": s.title,
+        "notes": s.notes[:2000],
+        "description": s.description[:2000],
+    }
+
+
 @dataclass
 class Prepared:
     """A candidate's neighbors (one batched match) and its recommendation (maybe still running)."""
@@ -309,6 +333,13 @@ class Prepared:
     neighbors: list[match.Neighbor]
     degraded: str
     proposal: object  # a Future / _Lazy yielding a Proposal
+
+
+def _reconciled_route(c: dict, marker_kind: str, bead: str, policy: Policy) -> dict | None:
+    """A create that landed before its receipt did still owes its owner route (the ref is the bead)."""
+    if marker_kind == "candidate" and cand.kind_of(c) in ("question_owner", "decision"):
+        return executor.route_for(c, bead, policy)
+    return None
 
 
 def process(
@@ -350,6 +381,7 @@ def process(
                     outcome="reconciled",
                     bead_id=bead,
                     redelivered=attempts > 0,
+                    route=_reconciled_route(c, kind, bead, policy),
                 ),
             )
             queue.release_lease(cid)
@@ -375,6 +407,11 @@ def process(
         queue.log(entry)
         return False
 
+    if any(executor.writes_metadata(i.argv) for i in plan.items):  # defence in depth: never written
+        entry.update(outcome="failed", error="refused: a plan would write bead metadata")
+        summary.failed += 1
+        queue.log(entry)
+        return False
     attempts = queue.take_lease(cid)
     for item in plan.items:
         engine.run_item(item, timeout)
@@ -392,6 +429,10 @@ def process(
     result = "dropped" if plan.action == "drop" else ("reconciled" if reconciled else "applied")
     entry.update(outcome=result, bead_id=bead or None, attempts=attempts)
     undo = f"close {bead} embeadify undo: scribe create {cid}" if plan.action == "create" and bead else None
+    route = None
+    if plan.route and plan.action == "create" and bead:
+        route = {**plan.route, "hub_brief": {**plan.route["hub_brief"], "ref": bead}}
+        entry["route"] = route
     queue.write_decision(
         sub.receipt_id,
         _receipt(
@@ -405,6 +446,9 @@ def process(
             parent=plan.parent,
             placement_rule=plan.placement_rule,
             unplaced=plan.unplaced or None,
+            guards=plan.guards or None,
+            flags=plan.flags or None,
+            route=route,
             undo=undo,
             redelivered=attempts > 1,
             recommendation=rec.to_dict(),
@@ -445,12 +489,29 @@ def _rematch(subs, policy, proposer: Proposer, timeout: float, summary: Summary,
         old[cid] = Prepared(neighbors, degraded, proposer.submit(s.candidate, neighbors))
 
 
+def with_owner_summaries(neighbors: list[match.Neighbor], snap) -> list[match.Neighbor]:
+    """Attach each neighbor's bead metadata `owner_summary` (read-only context for the recommender)."""
+    out = []
+    for n in neighbors:
+        summary = snap[n.issue_id].owner_summary if snap is not None and n.issue_id in snap else ""
+        out.append(replace(n, owner_summary=summary) if summary else n)
+    return out
+
+
+def _context_snapshot():
+    try:
+        return snapshot.take()
+    except bd.BdError:
+        return None  # context only: a decision never depends on it
+
+
 def _prepare_matches(subs, policy, timeout, summary):
     started = time.monotonic()
     found, calls = match.fetch_many([s.candidate for s in subs], policy.match_command, timeout)
     summary.timing.match_seconds += time.monotonic() - started
     summary.timing.match_calls += calls
-    return found
+    snap = _context_snapshot()
+    return {cid: (with_owner_summaries(ns, snap), degraded) for cid, (ns, degraded) in found.items()}
 
 
 def run_once(
