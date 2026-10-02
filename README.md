@@ -95,9 +95,27 @@ and `dup` / `close` are undone by reopening, which does not remove a duplicate l
 | `embeadify apply FILE [--apply] [-j N] [--undo-file PATH] [--json]` | Dry run, or execute. |
 | `embeadify undo UNDO_FILE [--apply]` | Replay an undo file through the same engine. |
 | `embeadify doctor` | Check `bd` and show the redacted write target. |
+| `embeadify scribe submit\|status\|receipts\|run\|report` | Bead intake, shadow by default. See [`docs/scribe.md`](docs/scribe.md). |
 
 Exit codes: `0` success, `1` one or more ops failed or were skipped for drift, `2` usage error, invalid
 decisions, `bd` missing or unusable, or refusal to write.
+
+## Scribe: bead intake (stage 1, shadow)
+
+Agents submit candidate beads; the scribe recommends create, fold, dup, or drop, and a deterministic
+executor decides what is allowed to run. **Shadow mode is the default and writes nothing.**
+
+```bash
+embeadify scribe submit candidate.json      # validates, queues immutably, prints a receipt
+embeadify scribe run --once                 # SHADOW: logs what would happen, writes nothing
+embeadify scribe report                     # counts by action, every downgrade
+embeadify scribe run --once --live --policy scribe.toml    # needs `live = true` in the policy too
+```
+
+One executor at a time. Anything unsure becomes a `create`; a self-declared P0 or `security` candidate is
+only ever created; a recommender (built-in, or your own command) never gets to run text. Neighbors come from
+[emBEADings](https://github.com/CantrellJax/embeadings) (`embead match`). Stage plan and every rule:
+[`docs/scribe.md`](docs/scribe.md). The decisions grammar also gained `create`.
 
 ## Optional policy filters (plan only)
 
@@ -121,12 +139,13 @@ Tests are synthetic and offline: a fake `bd` shim on `PATH` implements just enou
 - [Documentation index](docs/README.md)
 - [Decisions-file grammar](docs/decisions-file.md)
 - [emBEADings consumer contract](docs/consumer-contract.md)
+- [The scribe](docs/scribe.md)
 - [Plan rules](docs/plan-rules.md)
 
 ## Principles
 
 - **Nothing is applied without `--apply`.** Reading, planning, and validating never write.
-- **Humans decide.** emBEADify proposes nothing on its own authority; plan output is commented out.
+- **Humans decide.** `plan`/`apply` propose nothing on their own authority; plan output is commented out. The one exception is the opt-in scribe: shadow by default, with every rule enforced by a deterministic executor (see above).
 - **The tracker stays authoritative.** Only the public `bd` CLI is used.
 - **Reversible by construction.** Every applied batch leaves an undo file.
 - **Deterministic and local.** Same inputs, same output; no network, embedding model, or telemetry.

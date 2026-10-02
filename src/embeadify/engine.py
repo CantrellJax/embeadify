@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -14,8 +15,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import bd, snapshot
-from .decisions import Op
+from . import bd, sanitize, snapshot
+from .decisions import Op, create_fields
 
 MAX_WORKERS = 8
 TRANSIENT = re.compile(
@@ -38,6 +39,11 @@ class Item:
     irreversible: bool = False
     argv: list[str] = field(default_factory=list)
     watch: list[str] = field(default_factory=list)
+    marker: str = (
+        ""  # `candidate:ID` or `provenance:ID`: how to tell, after an ambiguous write, that it landed
+    )
+    marker_on: str = ""  # bead that carries a `provenance:` marker
+    created_id: str = ""
     # execution outcome
     outcome: str = ""  # ok | skipped | failed | ""
     message: str = ""
@@ -49,8 +55,38 @@ class Item:
         return "bd " + shlex.join(self.argv) if self.argv else ""
 
 
+MAX_CREATE_BODY_FILE = 1_000_000
+MAX_CREATE_TITLE = 200
+MAX_CREATE_BODY = 8000
+
+
+def create_argv(
+    title: str, type_: str, priority: int | str, parent: str | None, description: str
+) -> list[str]:
+    """The one place a `bd create` argument array is built. Every value is a single `--flag=value` word."""
+    argv = [
+        "create",
+        f"--title={title}",
+        f"--type={type_}",
+        f"--priority={priority}",
+        f"--description={description}",
+        "--json",
+    ]
+    if parent:
+        argv.append(f"--parent={parent}")
+    return argv
+
+
+def description_with_marker(body: str, candidate_id: str, extra: list[str] | None = None) -> str:
+    parts = [part for part in [body, *(extra or [])] if part]
+    parts.append(sanitize.marker_line("candidate", candidate_id))
+    return "\n\n".join(parts)
+
+
 def _argv(op: Op) -> list[str]:
     k, i, a = op.kind, op.id, op.arg
+    if k == "create":
+        return []  # built in validate(): needs the body file and the snapshot
     if k == "close":
         return ["close", i, f"--reason={a}"]
     if k == "parent":
@@ -95,10 +131,14 @@ def validate(
     undo_mode = mode == "undo"
     state = snapshot.clone(snap)
     items: list[Item] = []
+    created: set[str] = set()
     for op in ops:
         item = Item(op=op)
         items.append(item)
         item.argv = _argv(op)
+        if op.kind == "create":
+            _validate_create(item, state, created, undo_mode, allow_closed_parent)
+            continue
         cur = state.get(op.id)
         if cur is None:
             item.verdict, item.detail = "refused", f"unknown id {op.id}"
@@ -224,6 +264,58 @@ def validate(
     return items
 
 
+def _validate_create(
+    item: Item, state, created: set[str], undo_mode: bool, allow_closed_parent: bool
+) -> None:
+    op = item.op
+    if undo_mode:
+        item.verdict, item.detail = "refused", "`create` cannot appear in an undo file"
+        return
+    fields = create_fields(op.arg)
+    hit = snapshot.find_marker(state, op.id, kinds=("candidate",))
+    if hit or op.id in created:
+        item.verdict, item.detail = (
+            "noop",
+            f"candidate {op.id} already created as {hit[1] if hit else 'earlier line'}",
+        )
+        return
+    parent = fields.get("parent")
+    if parent:
+        if parent not in state:
+            item.verdict, item.detail = "refused", f"unknown parent id {parent}"
+            return
+        if state[parent].status == "closed" and not allow_closed_parent:
+            item.verdict = "refused"
+            item.detail = f"parent {parent} is closed; pass --allow-closed-parent to override"
+            return
+        item.watch = [parent]
+    body = ""
+    if "body-file" in fields:
+        try:
+            with open(fields["body-file"], "rb") as handle:
+                raw = handle.read(MAX_CREATE_BODY_FILE + 1)
+        except OSError as error:
+            item.verdict, item.detail = "refused", f"cannot read body-file: {error.strerror or error}"
+            return
+        if len(raw) > MAX_CREATE_BODY_FILE:
+            item.verdict, item.detail = "refused", f"body-file is larger than {MAX_CREATE_BODY_FILE} bytes"
+            return
+        body, truncated = sanitize.clean_block(raw.decode("utf-8", errors="replace"), MAX_CREATE_BODY)
+        if truncated:
+            body += f"\n\n[body truncated at {MAX_CREATE_BODY} characters]"
+    title = sanitize.clean_line(fields["title"], MAX_CREATE_TITLE)
+    if not title:
+        item.verdict, item.detail = "refused", "title is empty after cleaning"
+        return
+    item.argv = create_argv(
+        title, fields["type"], fields["priority"], parent, description_with_marker(body, op.id)
+    )
+    item.marker = f"candidate:{op.id}"
+    item.old, item.new = "(none)", f"(new {fields['type']} P{fields['priority']})"
+    item.detail = f"title: {title}; undo is `close NEW_ID` once the id is known"
+    created.add(op.id)
+
+
 def undo_text(items: list[Item], source: str, target: str) -> str:
     """Render the undo decisions (reverse order) as a replayable decisions file."""
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -235,6 +327,16 @@ def undo_text(items: list[Item], source: str, target: str) -> str:
     ]
     for item in reversed(items):
         if item.verdict != "apply":
+            continue
+        if item.op.kind == "create":
+            if item.created_id:
+                reason = f"embeadify undo: created for {item.op.id}"
+                lines.append(Op("close", item.created_id, reason).render())
+            else:
+                lines.append(
+                    f"# create {item.op.id}: new id not known yet; find it by the line"
+                    f" `{sanitize.marker_line('candidate', item.op.id)}` in the description, then close it"
+                )
             continue
         if item.irreversible:
             lines.append(f"# cannot undo automatically: {item.op.render()}")
@@ -284,7 +386,82 @@ def detect_drift(items: list[Item], before: snapshot.Snapshot, after: snapshot.S
     return drift
 
 
+def _created_id(stdout: str) -> str:
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return ""
+    if isinstance(data, list) and data:
+        data = data[0]
+    value = data.get("id") if isinstance(data, dict) else None
+    return value if sanitize.is_id(value) else ""
+
+
+def _find_applied(item: Item) -> str:
+    """Fresh snapshot lookup of the item's marker. Returns the bead id when the write already landed."""
+    snap = snapshot.take()
+    kind, _, cid = item.marker.partition(":")
+    if kind == "candidate":
+        hit = snapshot.find_marker(snap, cid, kinds=("candidate",))
+        return hit[1] if hit else ""
+    state = snap.get(item.marker_on)
+    return item.marker_on if state is not None and item.marker in state.markers else ""
+
+
+def _execute_marked(item: Item, timeout: float, retries: int) -> None:
+    """Run a write that carries a marker. A failure is never retried before the marker is looked up."""
+    attempt = 0
+    is_create = item.op.kind == "create"
+    while True:
+        try:
+            result = bd.run(item.argv, timeout=timeout)
+        except bd.BdError as error:
+            item.outcome, item.message = "failed", str(error)
+            return
+        if result.returncode == 0:
+            item.outcome, item.message = "ok", ""
+            if is_create:
+                item.created_id = _created_id(result.stdout)
+                if not item.created_id:
+                    try:
+                        item.created_id = _find_applied(item)
+                    except bd.BdError:
+                        item.message = "created, but the new id could not be read back"
+            return
+        message = bd.redact(result.stderr.strip() or result.stdout.strip() or "no output").splitlines()
+        message = " | ".join(message[:3])
+        try:
+            landed = _find_applied(item)
+        except bd.BdError as error:
+            item.outcome = "failed"
+            item.message = (
+                f"exit {result.returncode}: {message}; could not confirm whether it landed: {error}"
+            )
+            return
+        if landed:
+            item.outcome, item.message = "ok", "reconciled: the write had already landed"
+            if is_create:
+                item.created_id = landed
+            return
+        guard = bool(GUARD.search(message)) and not result.timed_out
+        transient = bool(TRANSIENT.search(message)) or result.timed_out
+        if attempt < retries and transient and not guard:
+            attempt += 1
+            time.sleep(0.2)
+            continue
+        item.outcome, item.message = "failed", f"exit {result.returncode}: {message}"
+        return
+
+
+def run_item(item: Item, timeout: float) -> None:
+    """Execute one validated item (used by the scribe executor)."""
+    _execute_one(item, timeout)
+
+
 def _execute_one(item: Item, timeout: float, retries: int = 1) -> None:
+    if item.marker:
+        _execute_marked(item, timeout, retries)
+        return
     attempt = 0
     while True:
         try:

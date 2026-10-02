@@ -4,7 +4,10 @@ Knobs (environment): FAKE_BD_LOG (append one line per write), FAKE_BD_SLEEP (sec
 FAKE_BD_FAIL (comma ids whose writes fail permanently), FAKE_BD_FLAKY (comma ids whose first write
 fails with a transient error), FAKE_BD_GUARD (any write is refused by a guard),
 FAKE_BD_MUTATE_ON_THIRD_LIST ("id:field=value": applied before the 3rd `list` (doctor, snapshot, recheck)),
-FAKE_BD_NO_CONTEXT (context --json fails), FAKE_BD_SECRET (echoed into context to test redaction).
+FAKE_BD_NO_CONTEXT (context --json fails), FAKE_BD_SECRET (echoed into context to test redaction),
+FAKE_BD_CALLS (append every write's full argv as one JSON line),
+FAKE_BD_CRASH_AFTER_CREATE / FAKE_BD_CRASH_AFTER_NOTE (the first such write lands, then bd reports a lost
+connection and exits 1: the ambiguous-write case).
 """
 
 import json
@@ -45,11 +48,56 @@ def log(line):
             handle.write(f"{line} {time.time():.4f}\n")
 
 
+def record_call(args):
+    path = os.environ.get("FAKE_BD_CALLS")
+    if path:
+        with open(path, "a") as handle:
+            handle.write(json.dumps(args) + "\n")
+
+
 def flag(args, name):
     for a in args:
         if a.startswith(f"--{name}="):
             return a.split("=", 1)[1]
     return None
+
+
+def create(args):
+    if os.environ.get("FAKE_BD_GUARD"):
+        print("bd-guard: writes to this database are refused", file=sys.stderr)
+        return 1
+    fd = acquire()
+    try:
+        data = load()
+        numbers = [int(i["id"].rsplit("-", 1)[1]) for i in data if i["id"].rsplit("-", 1)[-1].isdigit()]
+        new_id = f"demo-{max(numbers, default=0) + 1}"
+        parent = flag(args, "parent")
+        if parent and not any(i["id"] == parent for i in data):
+            print(f"unknown parent {parent}", file=sys.stderr)
+            return 1
+        data.append(
+            {
+                "id": new_id,
+                "title": flag(args, "title"),
+                "status": "open",
+                "issue_type": flag(args, "type"),
+                "priority": int(flag(args, "priority")),
+                "description": flag(args, "description") or "",
+                "labels": [],
+                "parent_id": parent,
+                "comment_count": 0,
+                "dependencies": [],
+            }
+        )
+        save(data)
+    finally:
+        release(fd)
+    if os.environ.get("FAKE_BD_CRASH_AFTER_CREATE") and not DB.with_suffix(".crashed-create").exists():
+        DB.with_suffix(".crashed-create").write_text("1")
+        print("read tcp: connection reset by peer", file=sys.stderr)
+        return 1
+    print(json.dumps({"id": new_id}))
+    return 0
 
 
 def main():
@@ -97,6 +145,9 @@ def main():
         return 0
     # writers
     verb = args[0]
+    record_call(args)
+    if verb == "create":
+        return create(args)
     ident = args[1]
     log(f"start {verb} {ident}")
     time.sleep(float(os.environ.get("FAKE_BD_SLEEP", "0")))
@@ -141,6 +192,15 @@ def main():
     finally:
         release(fd)
     log(f"end {verb} {ident}")
+    if (
+        verb == "update"
+        and flag(args, "append-notes") is not None
+        and os.environ.get("FAKE_BD_CRASH_AFTER_NOTE")
+        and not DB.with_suffix(".crashed-note").exists()
+    ):
+        DB.with_suffix(".crashed-note").write_text("1")
+        print("read tcp: connection reset by peer", file=sys.stderr)
+        return 1
     return 0
 
 

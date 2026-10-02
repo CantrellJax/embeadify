@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import bd
+from . import bd, sanitize
 
 LIST_ARGS = ["list", "--all", "--limit", "0", "--json"]
 DEP_EDGES = ("blocks", "parent-child")
@@ -20,6 +20,7 @@ class State:
     blocks: set[str] = field(default_factory=set)  # ids this issue depends on via `blocks`
     title: str = ""
     comment_count: int | None = None
+    markers: set[str] = field(default_factory=set)  # `candidate:ID` / `provenance:ID`
 
     def watch(self) -> tuple:
         return (self.status, self.parent, self.priority, tuple(sorted(self.labels)))
@@ -65,6 +66,7 @@ def parse(raw) -> Snapshot:
             blocks=blocks,
             title=" ".join(str(item.get("title") or "").split()),
             comment_count=_priority(item.get("comment_count")),
+            markers=sanitize.find_markers(item.get("description"), item.get("notes")),
         )
     return snap
 
@@ -75,7 +77,17 @@ def take() -> Snapshot:
 
 def clone(snap: Snapshot) -> Snapshot:
     return {
-        k: State(v.id, v.status, v.parent, v.priority, set(v.labels), set(v.blocks), v.title, v.comment_count)
+        k: State(
+            v.id,
+            v.status,
+            v.parent,
+            v.priority,
+            set(v.labels),
+            set(v.blocks),
+            v.title,
+            v.comment_count,
+            set(v.markers),
+        )
         for k, v in snap.items()
     }
 
@@ -91,3 +103,14 @@ def open_dependents(snap: Snapshot, ident: str) -> list[str]:
 
 def any_dependents(snap: Snapshot, ident: str) -> bool:
     return any(s.id != ident and (s.parent == ident or ident in s.blocks) for s in snap.values())
+
+
+def find_marker(
+    snap: Snapshot, candidate_id: str, kinds=("candidate", "provenance")
+) -> tuple[str, str] | None:
+    """(kind, bead id) of the first bead carrying a marker for this candidate, in id order."""
+    for ident in sorted(snap):
+        for kind in kinds:
+            if f"{kind}:{candidate_id}" in snap[ident].markers:
+                return kind, ident
+    return None

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "report_type": "match",
+  "policy": {"read_only": true, "tracker_mutation_allowed": false, "creates_records": false},
+  "summary": {"candidate_count": 2, "candidates_with_matches": 1, "records_compared": 6},
+  "candidates": [
+    {
+      "candidate_id": "cand-a",
+      "content_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "status": "matches",
+      "no_match_reason": null,
+      "records_compared": 6,
+      "neighbors": [
+        {
+          "issue_id": "demo-5",
+          "status": "open",
+          "issue_type": "task",
+          "priority": 2,
+          "title": "Synthetic demo-5",
+          "similarity": 0.97,
+          "rank": 1,
+          "is_closed": false,
+          "parent_id": "demo-2",
+          "parent_status": "live",
+          "resolution_evidence": null
+        },
+        {
+          "issue_id": "demo-1",
+          "status": "closed",
+          "issue_type": "task",
+          "priority": 2,
+          "title": "Synthetic demo-1",
+          "similarity": 0.91,
+          "rank": 2,
+          "is_closed": true,
+          "parent_id": null,
+          "parent_status": null,
+          "resolution_evidence": {"kind": "close_reason", "text": "fixed by a synthetic change"}
+        },
+        {"issue_id": "bad id with spaces", "similarity": 0.99},
+        {"issue_id": "demo-6", "similarity": 7}
+      ]
+    },
+    {
+      "candidate_id": "cand-b",
+      "content_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "status": "no-match",
+      "no_match_reason": "no-records-in-scope",
+      "records_compared": 0,
+      "neighbors": []
+    }
+  ]
+}
