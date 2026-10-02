@@ -426,7 +426,9 @@ def test_zero_budget_means_no_model_at_all(llm_sp, capsys):
 
 def test_the_budget_also_bounds_a_parallel_pass(llm_sp, capsys):
     rp(llm_sp, "--since", "2026-09-02", "--json", "--max-llm-calls", "4", "--recommender-jobs", "4")
-    assert llm_prompts(llm_sp) == 4 and json.loads(capsys.readouterr().out)["budget_skipped"] == (N - 1) - 4
+    # count from the log, not the shared seen-file: concurrent appends can interleave on Windows
+    called = [r for r in rows(llm_sp).values() if r["recommender"]["model_called"]]
+    assert len(called) == 4 and json.loads(capsys.readouterr().out)["budget_skipped"] == (N - 1) - 4
 
 
 def test_budget_applies_to_scribe_run_and_defaults_are_conservative(llm_sp, capsys):
