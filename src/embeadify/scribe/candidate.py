@@ -27,7 +27,14 @@ KEYS = {
     "parent",
     "labels",
     "supersedes",
+    "kind",
 }
+KINDS = ("task", "bug", "question_chief", "question_owner", "decision")
+QUESTION_KINDS = ("question_chief", "question_owner", "decision")
+CHIEF_LABELS = ("questions",)
+OWNER_LABELS = ("ask:owner",)
+REPLAY_MARKER = re.compile(r"(?im)^\s*embeadify-replay:")
+REPLAY_ID_PREFIX = "replay-"
 REQUIRED = ("candidate_id", "title", "body", "type", "priority", "source")
 
 
@@ -113,6 +120,11 @@ def validate(obj) -> dict:
             errors.append(f"every {key} entry must be a string of at most {each} characters")
         else:
             out[key] = list(value)
+    if obj.get("kind") is not None:
+        if obj["kind"] in KINDS:
+            out["kind"] = obj["kind"]
+        else:
+            errors.append(f"kind must be one of {', '.join(KINDS)}")
     for key in ("parent", "supersedes"):
         if obj.get(key) is not None:
             if is_id(obj[key]):
@@ -142,3 +154,34 @@ def is_urgent(candidate: dict) -> bool:
     """Self-declared urgency. It buys no privilege: urgent candidates are only ever created."""
     labels = [label.lower() for label in candidate.get("labels", [])]
     return candidate["priority"] <= 1 or "security" in labels or "security" in candidate["title"].lower()
+
+
+def kind_of(candidate: dict) -> str:
+    """The candidate's kind: the producer's `kind`, else derived (the label or title says it is a question).
+
+    `ask:owner` => question_owner; `questions` => question_chief; a title starting with QUESTION and no
+    label to say whose question it is => question_owner (the safer door: a bead plus an owner route, never a
+    silent note); otherwise the type decides (`bug` => bug, anything else => task).
+    """
+    if candidate.get("kind"):
+        return candidate["kind"]
+    labels = {label.lower() for label in candidate.get("labels", [])}
+    if labels & set(OWNER_LABELS):
+        return "question_owner"
+    if labels & set(CHIEF_LABELS):
+        return "question_chief"
+    if candidate["title"].lstrip().upper().startswith("QUESTION"):
+        return "question_owner"
+    return "bug" if candidate.get("type") == "bug" else "task"
+
+
+def self_trigger_reason(candidate: dict, self_names: tuple[str, ...]) -> str | None:
+    """Why a candidate would make the scribe react to its own output, or None. Checked at submit."""
+    agent = candidate["source"]["agent"].strip().lower()
+    if agent in {name.lower() for name in self_names}:
+        return f"source.agent {candidate['source']['agent']!r} is the scribe itself"
+    if REPLAY_MARKER.search(candidate.get("body", "")) or candidate["candidate_id"].startswith(
+        REPLAY_ID_PREFIX
+    ):
+        return "the candidate carries a replay marker (replay never queues)"
+    return None

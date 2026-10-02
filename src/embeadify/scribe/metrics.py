@@ -44,7 +44,9 @@ def block(rows: list[dict], labels: dict) -> dict:
     missed = [r for r, ln in labeled_creates if ln["verdict"] == "should_have_been_dup"]
     placement_judged = [ln for r, ln in labeled_creates if ln["verdict"] in ("correct", "bad_placement")]
     placement_ok = [ln for ln in placement_judged if ln["verdict"] == "correct"]
+    forced = Counter(g for r in rows for g in (r.get("guards") or []))
     return {
+        "guard_forced_create": dict(sorted(forced.items())),
         "llm_usage": usage(rows),
         "candidates": len(rows),
         "action_mix": {a: mix.get(a, 0) for a in ACTIONS if mix.get(a, 0)}
@@ -115,6 +117,15 @@ def render_block(name: str, b: dict) -> list[str]:
     lines = [f"== {name}: {b['candidates']} candidates =="]
     lines.append(
         "  action mix:        " + (", ".join(f"{k} {v}" for k, v in b["action_mix"].items()) or "none")
+    )
+    forced = b["guard_forced_create"]
+    lines.append(
+        "  guard_forced_create: "
+        + (
+            ", ".join(f"{k} {v}" for k, v in forced.items()) + f" (total {sum(forced.values())})"
+            if forced
+            else "none"
+        )
     )
     lines.append(f"  unplaced creates:  {fmt(b['unplaced_rate'], 'creates')}")
     lines.append(f"  LLM called:        {fmt(b['llm_call_rate'], 'external-recommender rows')}")

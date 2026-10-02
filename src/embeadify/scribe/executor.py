@@ -12,11 +12,18 @@ from dataclasses import dataclass, field
 from .. import engine, sanitize, snapshot
 from ..decisions import Op
 from . import candidate as cand
+from . import guards
 from .match import Neighbor
 from .policy import Policy
 from .recommend import Recommendation
 
 MAX_NOTE = 3000
+CLOSED_GUARD_REASONS = (
+    "closed_target_without_resolution_evidence",
+    "closed_target_without_owner_quote",
+    "closed_target_superseded",
+)
+METADATA_FLAGS = ("set-metadata", "--set-metadata", "--metadata")
 MAX_FOLD_EXCERPT = 1500
 
 
@@ -31,10 +38,17 @@ class Plan:
     reasons: list[str] = field(default_factory=list)  # why the action changed or the fallback was used
     adjustments: list[str] = field(default_factory=list)  # edits that did not change the action
     items: list[engine.Item] = field(default_factory=list)
+    kind: str = "task"  # the candidate's kind (task, bug, question_chief, question_owner, decision)
+    guards: list[str] = field(default_factory=list)  # guards that FORCED a create (guard_forced_create)
+    flags: list[str] = field(default_factory=list)  # e.g. `unsearched`
+    labels: list[str] = field(default_factory=list)  # labels a created bead carries (never inherited)
+    create_type: str | None = None  # overrides the candidate's type (a question becomes a `decision`)
+    route: dict | None = None  # an instruction for the operator/hub integration; the scribe never posts it
+    routed: bool = False  # the action is the kind's routing, not a downgrade of the recommendation
 
     @property
     def downgraded(self) -> bool:
-        return self.action != self.recommended
+        return self.action != self.recommended and not self.routed
 
     def steps(self, limit: int = 1000) -> list[dict]:
         return [
@@ -53,8 +67,12 @@ def _placeable(snap: snapshot.Snapshot, ident: str | None, policy: Policy) -> bo
     return policy.allow_deferred_parent or snap[ident].status != "deferred"
 
 
-def _placement_choices(c: dict, rec: Recommendation, fold_origin, neighbors, snap, policy: Policy):
+def _placement_choices(
+    c: dict, rec: Recommendation, fold_origin, neighbors, snap, policy: Policy, kind: str = "task"
+):
     """(rule, parent id or None) in precedence order. Lazily evaluated; the first placeable one wins."""
+    if kind == "question_chief":
+        yield "chiefs_questions_epic", policy.chiefs_questions_epic
     yield "recommender_parent", rec.parent
     yield "fold_target_parent", snap[fold_origin].parent if fold_origin else None
     yield "candidate_hint", c.get("parent")  # (a)
@@ -71,7 +89,7 @@ def _placement_choices(c: dict, rec: Recommendation, fold_origin, neighbors, sna
 
 
 def _place(c, rec, fold_origin, neighbors, snap, policy: Policy, out: Plan) -> None:
-    for rule, choice in _placement_choices(c, rec, fold_origin, neighbors, snap, policy):
+    for rule, choice in _placement_choices(c, rec, fold_origin, neighbors, snap, policy, out.kind):
         if choice is None:
             continue
         if _placeable(snap, choice, policy):
@@ -100,6 +118,11 @@ def _create_items(c: dict, plan: Plan, policy: Policy, related: str | None, note
             f"[body truncated at {policy.max_body} characters; the full text stays in the scribe queue]"
         )
     meta = [_source_line(c)]
+    if "unsearched" in plan.flags:
+        meta.append(
+            "Unsearched: no rulings docs, bead comments or closed beads were attested as searched;"
+            " a human or a later agent should search before answering."
+        )
     if note_priority:
         meta.append(note_priority)
     if related:
@@ -109,19 +132,24 @@ def _create_items(c: dict, plan: Plan, policy: Policy, related: str | None, note
         meta.append("Evidence refs (plain text, never fetched):\n" + "\n".join(f"- {r}" for r in refs))
     description = engine.description_with_marker("\n\n".join(parts), cid, ["\n".join(meta)])
     priority = max(c["priority"], policy.min_priority)
-    argv = engine.create_argv(title, c["type"], priority, plan.parent, description)
-    op = Op("create", cid, f"type={c['type']} priority={priority} title={title!r}")
+    type_ = plan.create_type or c["type"]
+    argv = engine.create_argv(title, type_, priority, plan.parent, description, plan.labels)
+    op = Op("create", cid, f"type={type_} priority={priority} title={title!r}")
     plan.items.append(
         engine.Item(op=op, argv=argv, marker=f"candidate:{cid}", watch=[plan.parent] if plan.parent else [])
     )
 
 
-def _note_items(c: dict, plan: Plan, rec: Recommendation, neighbor: Neighbor, content_hash: str) -> None:
+def _note_items(
+    c: dict, plan: Plan, rec: Recommendation, neighbor: Neighbor | None, content_hash: str
+) -> None:
     cid, target = c["candidate_id"], plan.target_id
     lines = [
         sanitize.marker_line("provenance", cid),
         f"{plan.action}: candidate {cid} (hash {content_hash[:12]}) matched this bead"
-        f" at similarity {neighbor.similarity:.2f}",
+        f" at similarity {neighbor.similarity:.2f}"
+        if neighbor
+        else f"{plan.action}: candidate {cid} (hash {content_hash[:12]}) is a chief question routed here",
         _source_line(c),
         "Title: " + sanitize.clean_line(c["title"], 200),
     ]
@@ -160,13 +188,60 @@ def _target_problem(rec: Recommendation, neighbor: Neighbor | None, snap, policy
     if snap[target].status == "closed":
         if rec.action == "fold":
             return "fold_into_closed_target"
-        if not neighbor.resolution_evidence.strip():
-            return "closed_target_without_resolution_evidence"
+        if problem := guards.closed_quote_problem(rec, neighbor.resolution_evidence, snap[target]):
+            return problem
     if rec.action == "drop" and not any(target in e and len(e.strip()) >= 12 for e in rec.evidence):
         return "drop_evidence_not_specific"
     if rec.action == "fold" and not rec.acceptance_covered:
         return "acceptance_not_confirmed"
     return ""
+
+
+def writes_metadata(argv: list[str]) -> bool:
+    """True when a `bd` argv would write bead metadata (the scribe READS `owner_summary`, never writes it)."""
+    return any(a == "metadata" or a.split("=", 1)[0] in METADATA_FLAGS for a in argv)
+
+
+def theme_of(c: dict) -> str | None:
+    """A theme for the owner-queue brief: the value of a `theme:X` label, else None."""
+    for label in c.get("labels", []):
+        if label.lower().startswith("theme:") and label[6:].strip():
+            return sanitize.clean_line(label[6:], 64)
+    return None
+
+
+def route_for(c: dict, ref: str | None, policy: Policy | None = None) -> dict:
+    """The owner-queue route: an instruction for the operator or hub integration to post, never run here."""
+    title = sanitize.clean_line(c["title"], (policy.max_title if policy else 200)) or c["candidate_id"]
+    return {"route": "owner_queue", "hub_brief": {"title": title, "ref": ref, "theme": theme_of(c)}}
+
+
+def _attested(rec: Recommendation) -> bool:
+    return rec.already_searched and any(s.strip() for s in rec.searched_sources)
+
+
+def _question_create(c, rec, kind, attested, content_hash, snap, policy: Policy, out: Plan) -> bool:
+    """Decide how a question-kind candidate that is being created is created. True: it became a note fold."""
+    out.create_type = "decision"
+    if not attested:
+        out.flags.append("unsearched")
+    if kind == "question_chief":
+        out.labels.append("questions")
+        epic = policy.chiefs_questions_epic
+        if epic and not _placeable(snap, epic, policy):
+            out.adjustments.append(f"chiefs_epic_not_live:{epic}")
+        elif epic and attested and not guards.candidate_sensitive(c, policy):
+            out.action, out.target_id, out.routed = "fold", epic, True
+            out.create_type, out.labels = None, []
+            out.reasons.append("question_chief_note_on_epic")
+            _note_items(c, out, rec, None, content_hash)
+            return True
+    else:  # question_owner, decision
+        out.labels.append("ask:owner")
+        out.route = route_for(c, None, policy)
+    if "unsearched" in out.flags:
+        out.labels.append("unsearched")
+    return False
 
 
 def plan(
@@ -178,39 +253,58 @@ def plan(
     notes: list[str] | None = None,
 ) -> Plan:
     cid, content_hash = c["candidate_id"], cand.digest(c)
-    out = Plan(action=rec.action, recommended=rec.action, reasons=list(notes or []))
+    kind = cand.kind_of(c)
+    out = Plan(action=rec.action, recommended=rec.action, reasons=list(notes or []), kind=kind)
     if rec.candidate_id != cid:  # a recommendation for another candidate is never applied
         out.action, out.target_id = "create", None
         out.reasons.append("recommendation_for_another_candidate")
         rec = Recommendation(cid, "create")
     by_id = {n.issue_id: n for n in neighbors}
     fold_origin = rec.target_id if rec.action == "fold" and rec.target_id in snap else None
+    attested = _attested(rec)
 
     def downgrade(reason: str) -> None:
         out.action = "create"
         out.reasons.append(reason)
 
-    if out.action != "create" and out.action not in policy.allowed_actions:
+    def force(guard: str) -> None:
+        if guard not in out.guards:
+            out.guards.append(guard)
+        downgrade("guard:" + guard)
+
+    if out.action != "create":  # the owner-routing guards: fail closed, only ever create
+        for hit in guards.hits(c, rec, snap, policy):
+            force(hit)
+    if out.action != "create" and kind in cand.QUESTION_KINDS and not attested:
+        force("unsearched_question")
+    wants = rec.action != "create"  # these reasons are recorded even when a guard already forced the create
+    if wants and rec.action not in policy.allowed_actions:
         downgrade("action_not_allowed")
-    if out.action != "create" and cand.is_urgent(c):
+    if wants and cand.is_urgent(c):
         downgrade("urgent_always_create")
-    if out.action != "create" and c.get("supersedes"):
+    if wants and c.get("supersedes"):
         downgrade("challenge_always_create")
     if out.action != "create":
         problem = _target_problem(rec, by_id.get(rec.target_id or ""), snap, policy)
         if problem:
             downgrade(problem)
+            if problem in CLOSED_GUARD_REASONS and "closed_neighbor_quote" not in out.guards:
+                out.guards.append("closed_neighbor_quote")
+    folded = False
     if out.action == "create":
         out.target_id = None
-        _place(c, rec, fold_origin, neighbors, snap, policy, out)
-        priority_note = ""
-        if c["priority"] < policy.min_priority:
-            out.adjustments.append("priority_clamped")
-            priority_note = (
-                f"Producer-declared priority P{c['priority']} is unverified;"
-                f" created as P{policy.min_priority}."
-            )
-        _create_items(c, out, policy, fold_origin, priority_note)
+        if kind in cand.QUESTION_KINDS:
+            folded = _question_create(c, rec, kind, attested, content_hash, snap, policy, out)
+        if not folded:
+            _place(c, rec, fold_origin, neighbors, snap, policy, out)
+            priority_note = ""
+            if c["priority"] < policy.min_priority:
+                out.adjustments.append("priority_clamped")
+                priority_note = (
+                    f"Producer-declared priority P{c['priority']} is unverified;"
+                    f" created as P{policy.min_priority}."
+                )
+            _create_items(c, out, policy, fold_origin, priority_note)
     elif out.action in ("dup", "fold"):
         out.target_id = rec.target_id
         _note_items(c, out, rec, by_id[rec.target_id], content_hash)

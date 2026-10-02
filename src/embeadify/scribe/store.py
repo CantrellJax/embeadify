@@ -70,6 +70,7 @@ class Queue:
         self.decisions_dir = self.root / "decisions"
         self.leases_dir = self.root / "leases"
         self.log_path = self.root / "log.jsonl"
+        self.routed_dir = self.root / "routed"  # one immutable marker per route an operator has posted
 
     def ensure(self) -> None:
         for d in (self.submissions_dir, self.decisions_dir, self.leases_dir):
@@ -146,6 +147,40 @@ class Queue:
         try:
             with open(self.decisions_dir / f"{rid}.json", "x", encoding="utf-8") as handle:
                 json.dump(receipt, handle, sort_keys=True, indent=2)
+        except FileExistsError:
+            return False
+        return True
+
+    # -- owner routes: recorded in a live receipt, posted by the operator/hub integration, never by the scribe
+    def routes(self) -> list[dict]:
+        """Every receipt that carries a route, with `pending` false once it was acknowledged as posted."""
+        out = []
+        for path in sorted(self.decisions_dir.glob("*.json")) if self.decisions_dir.is_dir() else []:
+            try:
+                receipt = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            route = receipt.get("route")
+            if isinstance(route, dict):
+                rid = receipt.get("receipt_id", path.stem)
+                out.append(
+                    {
+                        "receipt_id": rid,
+                        "candidate_id": receipt.get("candidate_id"),
+                        "bead_id": receipt.get("bead_id"),
+                        "decided_at": receipt.get("decided_at"),
+                        "pending": not (self.routed_dir / f"{rid}.json").exists(),
+                        **route,
+                    }
+                )
+        return sorted(out, key=lambda r: (r.get("decided_at") or "", r["receipt_id"]))
+
+    def ack_route(self, rid: str) -> bool:
+        """Mark a route as posted. Immutable; False when it was already acknowledged."""
+        self.routed_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            with open(self.routed_dir / f"{rid}.json", "x", encoding="utf-8") as handle:
+                json.dump({"receipt_id": rid, "acknowledged_at": now()}, handle)
         except FileExistsError:
             return False
         return True

@@ -32,11 +32,16 @@ class Recommendation:
     confidence: float = 0.0
     policy_version: str = ""
     acceptance_covered: bool = False  # fold only: the target's existing acceptance already covers it
+    already_searched: bool = (
+        False  # owner/chief questions: attests rulings, comments, closed beads were searched
+    )
+    searched_sources: tuple[str, ...] = ()  # what was searched (rulings docs, bead comments, closed beads)
     metadata: dict = field(default_factory=dict)  # backend telemetry (tokens, ms); never read for a decision
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["evidence"] = list(self.evidence)
+        d["searched_sources"] = list(self.searched_sources)
         return d
 
 
@@ -70,6 +75,16 @@ def from_obj(obj, candidate_id: str) -> Recommendation:
     covered = obj.get("acceptance_covered", False)
     if not isinstance(covered, bool):
         raise BadRecommendation("acceptance_covered must be true or false")
+    searched = obj.get("already_searched", False)
+    if not isinstance(searched, bool):
+        raise BadRecommendation("already_searched must be true or false")
+    sources = obj.get("searched_sources", [])
+    if (
+        not isinstance(sources, list)
+        or len(sources) > MAX_EVIDENCE
+        or any(not isinstance(e, str) or len(e) > MAX_EVIDENCE_LEN for e in sources)
+    ):
+        raise BadRecommendation("searched_sources must be a short list of short strings")
     meta = obj.get("metadata", {})
     if not isinstance(meta, dict) or set(meta) - set(METADATA_KEYS):
         raise BadRecommendation("metadata must be an object with only: " + ", ".join(METADATA_KEYS))
@@ -86,6 +101,8 @@ def from_obj(obj, candidate_id: str) -> Recommendation:
         confidence=float(conf),
         policy_version=version,
         acceptance_covered=covered,
+        already_searched=searched,
+        searched_sources=tuple(sanitize.clean_line(e, MAX_EVIDENCE_LEN) for e in sources),
     )
 
 

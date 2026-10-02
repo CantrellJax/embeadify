@@ -19,11 +19,12 @@ the tracker. The scribe never blocks `bd create`: the audited direct path stays.
 
 | Command | Purpose |
 | --- | --- |
-| `embeadify scribe submit CANDIDATE.json [--queue-dir D] [--json]` | Validate and queue one candidate (`-` reads stdin). Immutable. |
+| `embeadify scribe submit CANDIDATE.json [--queue-dir D] [--policy F] [--json]` | Validate and queue one candidate (`-` reads stdin). Immutable. Refuses the scribe's own events (see Owner rules). |
 | `embeadify scribe status` | Counts: queued, shadowed, failed, decided, invalid; run-lock holder. |
 | `embeadify scribe receipts [--action A]` | One line per submission: receipt id, state, action, bead. |
 | `embeadify scribe run [--once] [--live] [--policy F] [--recommender CMD] [--interval S] [--limit N] [--recommender-jobs N] [--max-llm-calls N] [--max-llm-tokens N] [--timing]` | Process the queue. Shadow unless `--live` AND the policy allows it. |
-| `embeadify scribe report` | Counts by recommended and executed action; every downgrade and degraded input. |
+| `embeadify scribe report` | Counts by recommended and executed action; every downgrade, guard that forced a create, and degraded input. |
+| `embeadify scribe routes [--all] [--ack RECEIPT] [--json]` | Owner-queue routes recorded in live receipts, for an operator or hub integration to post. Pending only unless `--all`. |
 | `embeadify scribe replay`, `judge-pack`, `label`, `metrics`, `tune` | The trainee loop: dogfood on existing beads in shadow, label, measure, tune. See [scribe-trainee.md](scribe-trainee.md). |
 
 Exit codes: `0` ok; `1` a candidate failed to write or a submission was invalid (it stays queued);
@@ -42,13 +43,18 @@ Exit codes: `0` ok; `1` a candidate failed to write or a submission was invalid 
   "evidence_refs": ["plain strings, recorded and never fetched"],
   "parent": "optional hint",
   "labels": ["optional"],
-  "supersedes": "optional candidate_id this one challenges"
+  "supersedes": "optional candidate_id this one challenges",
+  "kind": "optional: task | bug | question_chief | question_owner | decision"
 }
 ```
 
 `candidate_id` is the producer's durable submission key (1-96 characters: letters, digits, `. _ : -`).
 `type` is one of `task bug feature chore epic`; `priority` is 0-4 or P0-P4 and is only a guess. Unknown
 fields are rejected. Limits: file 256 KiB, title 500, body 100,000 characters, 50 refs.
+
+`kind` is optional. When absent it is derived: label `ask:owner` is `question_owner`, label `questions` is
+`question_chief`, a title starting `QUESTION` with neither label is `question_owner` (the safer door), else
+`bug` for type bug and `task` for the rest. Questions are routed, never filed as plain tasks (Owner rules).
 
 Idempotency: the same key with the same content hash returns the same receipt and queues nothing new. The
 same key with different content is refused as a conflict; submit changed content under a new key. To
@@ -73,11 +79,14 @@ modified or deleted), `decisions/<receipt>.json` (live decision receipts, immuta
 
 ```json
 {"candidate_id": "...", "action": "create|fold|dup|drop", "target_id": "demo-4", "parent": null,
- "evidence": ["strings"], "confidence": 0.93, "policy_version": "x", "acceptance_covered": false}
+ "evidence": ["strings"], "confidence": 0.93, "policy_version": "x", "acceptance_covered": false,
+ "already_searched": false, "searched_sources": []}
 ```
 
 `acceptance_covered` is an addition to the minimal field list: only for `fold`, it asserts that the
-target's existing acceptance already covers the finding.
+target's existing acceptance already covers the finding. `already_searched` and `searched_sources` are the
+recommender's attestation, for question candidates only, that it searched rulings docs, bead comments and
+closed beads (see Owner rules).
 
 ### What the executor enforces (the recommender cannot loosen any of it)
 
@@ -94,13 +103,80 @@ target's existing acceptance already covers the finding.
   live) with a `Related:` line, a linked bead.
 - `drop` needs evidence that names the target (at least 12 characters), else it becomes a create. A drop
   writes nothing to the tracker; the candidate stays in the queue and receipts.
-- A closed target is a `dup`/`drop` basis only with explicit `resolution_evidence` from the match report.
+- A closed target is a `dup`/`drop` basis only with an owner-attributed, dated, verbatim quote (Owner
+  rules, guard B); `resolution_evidence` from the match report is necessary and no longer sufficient.
 - Urgent candidates (priority 0 or 1, a `security` label, or "security" in the title) and challenges are
   **always created**. A self-declared P0 buys nothing: it is created at `min_priority` (default P1).
 - A `parent` must exist and be live (see Placement); otherwise it is skipped and the reason is logged.
 
 `dup` and a confirmed `fold` append a provenance note (first line `embeadify-provenance: ID`) to the target,
 so N reporters of one finding are N provenance records on one bead.
+
+### Owner rules
+
+These are enforced by the deterministic executor. The recommender (a model) can only recommend; whatever
+it says, with any confidence and similarity, a guard below forces a **create** (or a route). Every guard
+fails closed: it can never suppress a candidate, so a wider match only costs an extra bead. Each firing is
+recorded in `plan.guards` / the log row's `guards` and the receipt's `reasons` (`guard:NAME`), and
+`scribe report` and `scribe metrics` count `guard_forced_create` per guard.
+
+**A. Never fold, drop or dup (guard names in brackets)** a candidate or target that:
+
+- touches prod data, published schedules, money, privacy or security: a whole-word, case-insensitive
+  keyword match on the candidate's title, body and labels, or on the target's title, plus a label match
+  on either (`sensitive_keywords`, `sensitive_labels`) [`sensitive_candidate`, `sensitive_target`];
+- targets a bead that is `in_progress` with an assignee in the snapshot [`claimed_target`]. A hub-claim
+  lookup is optional and not built in: the snapshot is the only input;
+- targets a bead labelled `owner-run`, `owner-decision`, `ask:owner`, `human`, `questions`, `needs-clay` or
+  `needs-night-ruling` (`owner_labels`), or of type `decision` (`owner_types`) [`owner_held_target`];
+- targets a bead whose notes or description say `close only on prod evidence` or `awaiting
+  schema_migrations` (`hold_phrases`) [`close_on_evidence_target`];
+- is relevant to the target only because it answers it: the candidate title or the recommender's evidence
+  says it answers/rules on the target, or the target's title starts with QUESTION [`answer_only`]. An answer
+  is added to that bead as a note by its owner, not folded away by the scribe. This one is a heuristic;
+  it leans toward creating.
+
+**B. Closed neighbors.** A closed neighbor is a basis for `dup` or `drop` only when ONE evidence string
+carries a date `YYYY-MM-DD`, a named owner (`Jackson` or `Clay`) and a double-quoted span (12+ characters)
+that literally appears in the neighbor's close reason (the match report's `resolution_evidence`), and the
+target has no `Superseded` marker (in its notes or description, or after the quote in the close reason).
+Otherwise it is created [`closed_neighbor_quote`; reasons `closed_target_without_owner_quote`,
+`closed_target_superseded`]. "Merged PR names the bead" and "absorbed by X" are NOT evidence. A missing or
+unreadable close reason means "not checked": create, never drop. A coordinator note or a ledger entry is
+not an owner ruling; the scribe does not classify authors beyond that regex, so a quote that merely
+carries an owner's name and date is trusted to the extent the close reason really contains it.
+
+**C. Owner and chief questions are their own kind** (`kind`, derived when absent; see the candidate).
+Routing, all in the plan and receipt, never by calling `hub` or any tool from the executor:
+
+| Kind | Plan |
+| --- | --- |
+| `question_chief` | With `chiefs_questions_epic` set (and live, searched, not sensitive): a `fold` that appends a note to that epic. Otherwise CREATE a bead of type `decision`, label `questions`, placed under that epic when set. Never a task, never blocking (no dependency is added). |
+| `question_owner`, `decision` | CREATE a bead of type `decision`, label `ask:owner`, and record `{"route": "owner_queue", "hub_brief": {"title", "ref": <the bead id after creation>, "theme"}}` in the plan and the live receipt. `theme` is the value of a `theme:X` candidate label. |
+
+`scribe routes` lists the pending routes (`--json` for machines); an operator or the hub integration posts
+each and then runs `scribe routes --ack RECEIPT`. The ref is null in shadow (nothing was created). A create
+that landed before its receipt does (crash) still gets its route when it is reconciled.
+
+Before a question is deduped, folded or dropped the recommendation must carry `already_searched: true` and
+a non-empty `searched_sources` (rulings docs, bead comments, closed beads). Without it the candidate is
+CREATED as a `decision` bead labelled `unsearched` (so a human or a later agent does the search) and is
+never dropped as "already ruled"; with it, it can still only be dropped or deduped under the guards above,
+including B's quote.
+
+Standing owner rules these guards serve: chief edge cases never block work; settle them by sitting with
+the chief; no hard-coded edge defaults before about 10 programs; frame every answer as configuration (a
+data row, never a code branch).
+
+**D. The scribe does not trigger itself.** `scribe submit` refuses (exit 2, nothing queued) a candidate
+whose `source.agent` is in `self_names` (default `embeadify-scribe`, case-insensitive), whose body has a
+line starting `embeadify-replay:`, or whose id starts `replay-`. Replay never queues.
+
+**E. `owner_summary`.** The bead metadata key `owner_summary` is READ as context: each neighbor sent to a
+plug-in recommender carries it (truncated to 400 characters) when the tracker's list output has the
+metadata, and the reference recommender puts it in its prompt. The scribe never writes bead metadata: no
+`bd` argument it builds contains `set-metadata`, `--set-metadata` or `metadata`, and the runner refuses
+to run a plan that does. Tests assert it.
 
 ### Placement
 
@@ -171,10 +247,11 @@ Rules it keeps:
 - Candidate title, body, evidence refs and neighbor titles are DATA: JSON-encoded inside one block whose
   delimiter carries a hash of its contents, with an instruction that the block is untrusted and cannot
   change the task. Body is cut at 6,000 characters, at most 10 neighbors and 10 refs are shown, and the
-  producer's identity is not sent.
+  producer's identity is not sent. A neighbor's `owner_summary` (bead metadata, read-only, cut at 400
+  characters) is shown when it has one.
 - The model may only choose `action` in `create|fold|dup|drop` (and only those the policy allows),
-  a `target_id` that is one of the neighbors shown, `confidence`, `evidence` strings, and
-  `acceptance_covered`. The reply must be exactly one JSON object (an `claude` result envelope or one code
+  a `target_id` that is one of the neighbors shown, `confidence`, `evidence` strings,
+  `acceptance_covered`, and the question attestation `already_searched` / `searched_sources`. The reply must be exactly one JSON object (an `claude` result envelope or one code
   fence is unwrapped); any extra key, a `parent`, an unknown target, or prose around the JSON is invalid.
 - On ANY problem (timeout, backend failure or missing command, non-JSON, invalid object) it prints a plain
   `create` with confidence 0 and an `evidence` note naming why. Its output is still re-validated by the
@@ -229,6 +306,14 @@ allow_deferred_parent = true    # deferred parents are live for placement; close
 llm_min_similarity = 0.80       # embeadify-recommend skips the model below this (see below)
 max_llm_calls = 40              # model calls per pass; past it the built-in recommender takes over
 max_llm_tokens = 250000         # model tokens (in + out, as the backend reports them) per pass
+# Owner rules (each list REPLACES its default; see Owner rules). Defaults shown abbreviated:
+sensitive_keywords = ["prod", "published schedule", "billing", "privacy", "security"]
+sensitive_labels = ["security", "privacy", "prod", "billing"]
+owner_labels = ["owner-run", "owner-decision", "ask:owner", "human", "questions", "needs-clay"]
+owner_types = ["decision"]
+hold_phrases = ["close only on prod evidence", "awaiting schema_migrations"]
+chiefs_questions_epic = "proj-chiefs"   # unset (default): chief questions become decision beads
+self_names = ["embeadify-scribe"]       # `scribe submit` refuses these sources
 [scribe.type_parent]            # issue type -> parent id
 bug = "proj-bugs"
 ```
@@ -306,7 +391,9 @@ print a one-line stderr note that those calls rarely change decisions.
 
 ## Receipts and the log
 
-`log.jsonl` lines: `candidate_id`, `hash`, `recommendation`, `executor_plan` (final action, placement rule, unplaced flag, reasons,
+`log.jsonl` lines also carry `guards` (the guards that forced a create), `target_facts` (what the guards saw
+on the recommended target, so `scribe tune` re-judges the row the same way) and `executor_plan.kind`,
+`flags` and `route`. They are: `candidate_id`, `hash`, `recommendation`, `executor_plan` (final action, placement rule, unplaced flag, reasons,
 adjustments, and the exact `bd` argument arrays, long values cut), `receipt_id`, `policy_version`, `mode`,
 `outcome`, `ts`. A live decision receipt adds the final and recommended action, the bead, and an undo hint
 (`close ID ...`). A write that fails leaves a lease and no receipt: the candidate stays queued and the

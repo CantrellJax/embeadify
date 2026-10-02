@@ -78,6 +78,12 @@ A deterministic stratified sample (same log, `--n` and `--seed` give the same pa
 | `unplaced` | 10% | a create with no parent |
 | `plain` | 15% | ordinary creates, as a control |
 
+The pack header also prints `guard_forced_create (population)`: how many logged decisions each owner-routing
+guard (see [scribe.md](scribe.md) "Owner rules") forced to a create, and each item's `scribe.guards` lists
+the guards that fired on it. A guard-forced decision is a `downgraded` item: the recommender said
+dup/fold/drop and the executor refused. Spot-check those first: a guard that fires on everything is too
+wide (trim its keyword list in the policy), and a guard that never fires is worth a second look.
+
 A stratum with too few rows gives its share to the others. Each item has the candidate title and body
 (truncated), the recommended and final action with evidence and reasons, the top neighbors with
 similarity, status and parent, what the filer actually did, and the exact label command. The packet says
@@ -111,6 +117,11 @@ a dup/fold/drop. Anything else is refused with exit 2. `--of` / `--better` on an
 - action mix, unplaced rate (of creates), LLM-call rate (of rows with an external recommender, where
   `model_called` is true), agreement with the filer (scribe create vs. the filer creating; any suppressing
   action vs. a bead closed as a duplicate), and placement agreement with the filer's current parent.
+- `guard_forced_create`: per guard, how many rows had a recommended dup/fold/drop forced to a create
+  (`sensitive_candidate`, `sensitive_target`, `claimed_target`, `owner_held_target`,
+  `close_on_evidence_target`, `answer_only`, `closed_neighbor_quote`, `unsearched_question`). It is a count
+  over rows, not a rate: the guards are fail-closed, so a high number costs extra beads, never lost work.
+  Log rows carry the same list in a top-level `guards` field (and `executor_plan.guards`).
 - From labels: label coverage; precision of dup/fold/drop proposals (1 - wrongly_dup rate); the
   FALSE-SUPPRESSION count, printed loudly with the candidate ids when it is above zero; the missed-duplicate
   rate (`should_have_been_dup` of labeled creates); placement accuracy (`correct` vs `bad_placement`).

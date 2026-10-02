@@ -81,7 +81,7 @@ def create(args):
                 "issue_type": flag(args, "type"),
                 "priority": int(flag(args, "priority")),
                 "description": flag(args, "description") or "",
-                "labels": inherited,
+                "labels": inherited + [x for x in (flag(args, "labels") or "").split(",") if x],
                 "parent_id": parent,
                 "comment_count": 0,
                 "dependencies": [],

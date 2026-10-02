@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 
 from .. import sanitize
 from . import labels as lb
@@ -113,6 +114,7 @@ def item_of(name: str, row: dict, queue: st.Queue, subs: dict[str, dict]) -> dic
             "parent": plan.get("parent"),
             "placement_rule": plan.get("placement_rule"),
             "unplaced": bool(plan.get("unplaced")),
+            "guards": plan.get("guards") or [],
         },
         "neighbors": [
             {
@@ -138,6 +140,9 @@ def build(rows, n: int, seed: str, queue: st.Queue, high_sim: float = HIGH_SIM) 
         "seed": seed,
         "verdicts": lb.VERDICTS,
         "population": len(rows),
+        "guard_forced_create": dict(
+            sorted(Counter(g for r in rows for g in (r.get("guards") or [])).items())
+        ),
         "items": [item_of(name, row, queue, subs) for name, row in chosen],
     }
 
@@ -145,6 +150,10 @@ def build(rows, n: int, seed: str, queue: st.Queue, high_sim: float = HIGH_SIM) 
 def render_markdown(pack: dict) -> str:
     out = [HEADER.format(verdicts=", ".join(pack["verdicts"]))]
     out.append("\n".join(f"- `{k}`: {v}" for k, v in pack["verdicts"].items()))
+    out.append(
+        "\nguard_forced_create (population): "
+        + (", ".join(f"{k} {v}" for k, v in pack["guard_forced_create"].items()) or "none")
+    )
     out.append(
         f"\nSample: {len(pack['items'])} of {pack['population']} unlabeled decisions,"
         f" seed `{pack['seed']}`.\n"

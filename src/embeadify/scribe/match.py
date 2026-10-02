@@ -53,9 +53,13 @@ class Neighbor:
     parent_status: str | None = None
     is_closed: bool = False
     resolution_evidence: str = ""  # the `text` of the close reason, empty when there is none
+    owner_summary: str = ""  # bead metadata `owner_summary` (read-only context from the snapshot, 400 chars)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if not d["owner_summary"]:
+            del d["owner_summary"]  # most neighbors have none: keep logs and payloads small
+        return d
 
 
 def _neighbor(raw) -> Neighbor | None:

@@ -409,18 +409,22 @@ def test_confirmed_fold_only_appends_evidence_to_the_target(sx, monkeypatch):
     assert sx.new_beads() == []
 
 
+OWNER_CLOSE = 'Jackson ruled 2026-09-20: "this exact finding is resolved and verified" (synthetic)'
+OWNER_QUOTE = 'demo-1 closed; Jackson 2026-09-20: "this exact finding is resolved and verified"'
+
+
 def test_drop_needs_specific_evidence_and_a_closed_target_needs_resolution_evidence(sx, monkeypatch):
     table = {
-        "d-none": [neighbor("demo-1", 0.97, closed=True, evidence="fixed in a synthetic change")],
-        "d-vague": [neighbor("demo-1", 0.97, closed=True, evidence="fixed in a synthetic change")],
+        "d-none": [neighbor("demo-1", 0.97, closed=True, evidence=OWNER_CLOSE)],
+        "d-vague": [neighbor("demo-1", 0.97, closed=True, evidence=OWNER_CLOSE)],
         "d-open-closed-no-res": [neighbor("demo-1", 0.97, closed=True)],
-        "d-good": [neighbor("demo-1", 0.97, closed=True, evidence="fixed in a synthetic change")],
+        "d-good": [neighbor("demo-1", 0.97, closed=True, evidence=OWNER_CLOSE)],
     }
     recs = {
         "d-none": rec("drop", "demo-1", evidence=[]),
         "d-vague": rec("drop", "demo-1", evidence=["looks the same"]),
         "d-open-closed-no-res": rec("drop", "demo-1", evidence=["demo-1 resolved this exact finding"]),
-        "d-good": rec("drop", "demo-1", evidence=["demo-1 was closed as fixed for this exact finding"]),
+        "d-good": rec("drop", "demo-1", evidence=[OWNER_QUOTE]),
     }
     assert run_with(sx, monkeypatch, table, recs) == 0
     got = {cid: d["final_action"] for cid, d in sx.decisions().items()}
@@ -461,10 +465,10 @@ def test_a_target_must_exist_and_must_be_a_retrieved_neighbor(sx, monkeypatch):
 
 def test_a_closed_neighbor_is_a_dup_basis_only_with_explicit_resolution_evidence(sx, monkeypatch):
     table = {
-        "c-yes": [neighbor("demo-1", 0.97, closed=True, evidence="fixed by a synthetic change")],
+        "c-yes": [neighbor("demo-1", 0.97, closed=True, evidence=OWNER_CLOSE)],
         "c-no": [neighbor("demo-1", 0.97, closed=True)],
     }
-    ev = ["demo-1 was closed with a resolution that covers this"]
+    ev = [OWNER_QUOTE]
     recs = {"c-yes": rec("dup", "demo-1", evidence=ev), "c-no": rec("dup", "demo-1", evidence=ev)}
     assert run_with(sx, monkeypatch, table, recs) == 0
     got = {cid: d["final_action"] for cid, d in sx.decisions().items()}
