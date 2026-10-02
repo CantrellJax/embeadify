@@ -27,4 +27,4 @@ chore = "example-maintenance"
 
 # Reference LLM recommender (see docs/scribe.md): skipped below this top-neighbor similarity.
 # To use it: scribe run --recommender embeadify-recommend
-# llm_min_similarity = 0.55
+# llm_min_similarity = 0.80  # just under the executor floor; lower only buys tuning data, at token cost

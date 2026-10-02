@@ -943,7 +943,7 @@ def test_placement_policy_keys_are_validated(tmp_path):
     good.write_text("[scribe]\ndefault_parent = 'x-1'\ntype_parent = {bug = 'x-2'}\n")
     pol = load(good)
     assert (pol.default_parent, pol.type_parent, pol.placement_min_similarity) == ("x-1", {"bug": "x-2"}, 0.6)
-    assert pol.allow_deferred_parent is True and pol.llm_min_similarity == 0.55
+    assert pol.allow_deferred_parent is True and pol.llm_min_similarity == 0.80
 
 
 def test_the_example_policy_loads():

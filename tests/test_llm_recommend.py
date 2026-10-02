@@ -41,7 +41,7 @@ def payload(cid="c-1", neighbors=None, **cand):
             "allowed_actions": ["create", "fold", "dup", "drop"],
             "min_similarity": 0.85,
             "min_confidence": 0.8,
-            "llm_min_similarity": 0.55,
+            "llm_min_similarity": 0.80,
         },  # fmt: skip
     }
 
@@ -195,15 +195,15 @@ def test_the_prompt_carries_no_environment_or_secrets(backend, monkeypatch):
 
 def test_the_cheap_prefilter_skips_the_model_below_llm_min_similarity(backend):
     backend.say({"action": "dup", "target_id": "demo-4", "confidence": 1, "evidence": ["x"]})
-    low = payload(neighbors=[nb("demo-4", 0.54)])
+    low = payload(neighbors=[nb("demo-4", 0.79)])
     out = llm.recommend(low)
     assert_plain_create(out)
     assert "model not called" in out["evidence"][0] and backend.prompts() == []
     assert_plain_create(llm.recommend(payload(neighbors=[])))
     assert backend.prompts() == []
-    assert llm.recommend(payload(neighbors=[nb("demo-4", 0.55)]))["action"] == "dup"  # at the floor: called
-    stricter = payload(neighbors=[nb("demo-4", 0.6)])
-    stricter["constraints"]["llm_min_similarity"] = 0.7
+    assert llm.recommend(payload(neighbors=[nb("demo-4", 0.80)]))["action"] == "dup"  # at the floor: called
+    stricter = payload(neighbors=[nb("demo-4", 0.84)])
+    stricter["constraints"]["llm_min_similarity"] = 0.9
     assert_plain_create(llm.recommend(stricter))
     assert len(backend.prompts()) == 1
 

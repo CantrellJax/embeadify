@@ -27,7 +27,7 @@ from .recommend import Recommendation, fallback
 GRID = {
     "min_similarity": (0.75, 0.80, 0.85, 0.90, 0.95),
     "min_confidence": (0.60, 0.70, 0.80, 0.90, 0.95),
-    "llm_min_similarity": (0.40, 0.55, 0.70),
+    "llm_min_similarity": (0.65, 0.75, 0.80, 0.85),
     "placement_min_similarity": (0.50, 0.60, 0.70, 0.80),
 }
 DEFAULT_MIN_LABELS = 30

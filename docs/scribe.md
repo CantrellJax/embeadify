@@ -189,7 +189,7 @@ Rules it keeps:
   `llm_output_tokens` and `llm_ms`; `scribe metrics` shows totals and per-call averages.
 - Cost and latency: one backend call per candidate that reaches it, so latency is the model's. The
   exact retries never reach it (the marker reconcile runs first), and a pre-filter skips
-  the model when the top neighbor's similarity is below `llm_min_similarity` (default 0.55; the scribe
+  the model when the top neighbor's similarity is below `llm_min_similarity` (default 0.80; the scribe
   passes it in `constraints`) or there are no neighbors: those are created without a call. Only the
   ambiguous band costs money. Use `--timeout` and `--limit` to bound a pass.
 
@@ -226,7 +226,7 @@ recommender_command = []
 placement_min_similarity = 0.6  # neighbor placement floor
 default_parent = "proj-inbox"   # placement rule: last resort before `unplaced`
 allow_deferred_parent = true    # deferred parents are live for placement; closed never
-llm_min_similarity = 0.55       # embeadify-recommend skips the model below this
+llm_min_similarity = 0.80       # embeadify-recommend skips the model below this (see below)
 max_llm_calls = 40              # model calls per pass; past it the built-in recommender takes over
 max_llm_tokens = 250000         # model tokens (in + out, as the backend reports them) per pass
 [scribe.type_parent]            # issue type -> parent id
@@ -292,6 +292,16 @@ prints `budget: N candidate(s) skipped the model...`, and `--json` replay has `b
 - The token cap needs a backend that reports usage; without it only the call cap bites, and `--timing`
   says "the backend reported no token usage".
 - The budget is per pass (per `scribe run` poll, or per `replay`), not per day.
+
+### Why `llm_min_similarity` defaults to 0.80
+
+The executor only accepts a dup, fold or drop when the target's similarity is at or above `min_similarity`
+(default 0.85). A model call for a candidate whose best neighbor is below roughly 0.80 can never change
+that outcome, so it is pure token cost (replaying 12 real beads, every top neighbor sat at 0.63-0.84 and a
+0.55 floor skipped none, at about 11k input tokens per call). The default sits just under the executor floor
+so near-misses are still judged. Lowering it only buys tuning data (`scribe tune` can see what a model would
+have said) at token cost. If it is set more than 0.2 below `min_similarity`, `scribe run` and `scribe replay`
+print a one-line stderr note that those calls rarely change decisions.
 - Which candidate sits on the cut-off can differ by one place when jobs > 1.
 
 ## Receipts and the log
