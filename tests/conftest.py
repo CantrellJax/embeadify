@@ -53,6 +53,8 @@ class Env:
         monkeypatch.setenv("PATH", str(self.bin) + os.pathsep + os.environ["PATH"])
         monkeypatch.setenv("FAKE_BD_DB", str(self.db))
         monkeypatch.setenv("FAKE_BD_LOG", str(self.log))
+        self.calls_log = root / "calls.jsonl"
+        monkeypatch.setenv("FAKE_BD_CALLS", str(self.calls_log))
         monkeypatch.chdir(root)
 
     def set_issues(self, issues):
@@ -63,6 +65,12 @@ class Env:
 
     def writes(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def calls(self):
+        """Every write call bd received, as argv lists (reads are not recorded)."""
+        if not self.calls_log.exists():
+            return []
+        return [json.loads(line) for line in self.calls_log.read_text().splitlines()]
 
     def decisions(self, text, name="d.decisions"):
         path = self.root / name

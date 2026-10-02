@@ -5,7 +5,9 @@ Thanks for helping build emBEADify.
 ## Project boundaries
 
 - Nothing is ever applied without an explicit `--apply`. Dry run is the default for every writing command.
-- emBEADify decides nothing. No heuristics that pick a parent, a duplicate, or a close reason.
+- `plan` and `apply` decide nothing: no heuristics that pick a parent, a duplicate, or a close reason. The
+  scribe (`src/embeadify/scribe/`) is the one opt-in exception: shadow mode by default, create as the
+  fallback, and every rule enforced by its deterministic executor. Scribe code never executes candidate text.
 - Invoke `bd` only through its public CLI. Pass the caller's environment through unchanged; never bypass
   or disable a `bd` guard.
 - Standard library only. No network access, embedding model, or telemetry.

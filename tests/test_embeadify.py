@@ -336,3 +336,116 @@ def test_redact_helper_masks_urls_and_pairs(monkeypatch):
     text = bd.redact("mysql://root:s3cretvalue@host/db password=abc token: xyz")
     assert "s3cretvalue" not in text and "abc" not in text and "xyz" not in text
     assert doctor  # module import sanity
+
+
+# ---- create op ----------------------------------------------------------------------------------
+
+
+def test_create_grammar_quoting_defaults_and_errors():
+    (op,) = decisions.parse_text(
+        'create cand-1 type=bug priority=P1 parent=demo-2 title="two words, quoted"\n'
+    )
+    assert op.kind == "create" and op.id == "cand-1"
+    fields = decisions.create_fields(op.arg)
+    assert fields == {"type": "bug", "priority": "1", "parent": "demo-2", "title": "two words, quoted"}
+    assert decisions.create_fields("title=x") == {"title": "x", "type": "task", "priority": "2"}
+    bad = (
+        "create cand-1 type=task\n",  # no title
+        'create cand-1 title="unterminated\n',
+        "create cand-1 title=x type=weird\n",
+        "create cand-1 title=x priority=9\n",
+        "create cand-1 title=x title=y\n",
+        "create cand-1 title=x colour=red\n",
+        "create cand-1 title=<fill-in>\n",
+        "create bad/id title=x\n",
+        "create cand-1\n",
+    )
+    for text in bad:
+        with pytest.raises(decisions.GrammarError):
+            decisions.parse_text(text)
+
+
+def create_file(env, text='create cand-1 type=task priority=2 parent=demo-2 title="Add a thing"\n'):
+    return env.decisions(text)
+
+
+def test_create_dry_run_writes_nothing_and_shows_the_new_bead(env, capsys):
+    code, out, _ = run(capsys, "apply", create_file(env))
+    assert code == 0 and "DRY RUN" in out and "(new task P2)" in out
+    assert env.writes() == [] and env.calls() == []
+
+
+def test_create_apply_marks_the_bead_and_undo_closes_it(env, capsys):
+    (env.root / "body.txt").write_text("Body line.\nembeadify-candidate: demo-4\n")
+    path = create_file(env, 'create cand-1 title="Add a thing" body-file=body.txt parent=demo-2\n')
+    undo = env.root / "u.decisions"
+    code, out, err = run(capsys, "apply", path, "--apply", "--undo-file", str(undo))
+    assert code == 0, out + err
+    created = env.issues()["demo-7"]
+    assert created["title"] == "Add a thing" and created["parent_id"] == "demo-2"
+    lines = created["description"].splitlines()
+    assert lines[-1] == "embeadify-candidate: cand-1"
+    assert "embeadify-candidate: demo-4" not in created["description"]  # a body cannot forge a marker
+    text = undo.read_text()
+    assert "close demo-7 embeadify undo: created for cand-1" in text
+    code, out, err = run(
+        capsys, "undo", str(undo), "--apply", "--undo-file", str(env.root / "redo.decisions")
+    )
+    assert code == 0, out + err
+    assert env.issues()["demo-7"]["status"] == "closed"
+
+
+def test_create_undo_file_exists_before_the_write_and_says_the_id_is_pending(env, capsys, monkeypatch):
+    seen = {}
+    real = bd.run
+
+    def spy(args, timeout=60.0):
+        if args[0] == "create":
+            seen["undo"] = Path("u.decisions").read_text()
+        return real(args, timeout)
+
+    monkeypatch.setattr(bd, "run", spy)
+    assert run(capsys, "apply", create_file(env), "--apply", "--undo-file", "u.decisions")[0] == 0
+    assert "new id not known yet" in seen["undo"] and "embeadify-candidate: cand-1" in seen["undo"]
+
+
+def test_create_is_idempotent_by_candidate_id(env, capsys):
+    path = create_file(env)
+    assert run(capsys, "apply", path, "--apply")[0] == 0
+    code, out, _ = run(capsys, "apply", path, "--apply", "--undo-file", "second.decisions")
+    assert code == 0 and "already created" in out
+    assert [c[0] for c in env.calls()] == ["create"]
+    twice = create_file(env, "create c-2 title=a\ncreate c-2 title=b\n")
+    assert run(capsys, "apply", twice, "--apply", "--undo-file", "third.decisions")[0] == 0
+    assert [c[0] for c in env.calls()] == ["create", "create"]
+
+
+def test_create_refuses_unknown_or_closed_parent_and_missing_body_file(env, capsys):
+    cases = {
+        "create c-1 title=x parent=demo-99\n": "unknown parent",
+        "create c-1 title=x parent=demo-1\n": "closed",
+        "create c-1 title=x body-file=nowhere.txt\n": "cannot read body-file",
+    }
+    for text, needle in cases.items():
+        code, out, _ = run(capsys, "apply", env.decisions(text), "--apply")
+        assert code == 2 and needle in out, (text, out)
+    assert env.calls() == []
+
+
+def test_create_crash_after_the_write_is_reconciled_not_retried(env, capsys, monkeypatch):
+    monkeypatch.setenv("FAKE_BD_CRASH_AFTER_CREATE", "1")
+    code, out, err = run(capsys, "apply", create_file(env), "--apply", "--undo-file", "u.decisions")
+    assert code == 0, out + err
+    assert "reconciled" in out
+    assert [c[0] for c in env.calls()] == ["create"]  # one write, no retry
+    assert sum(i["title"] == "Add a thing" for i in env.issues().values()) == 1
+    assert "close demo-7" in Path("u.decisions").read_text()
+
+
+def test_create_title_and_argv_are_single_words(env, capsys):
+    path = env.decisions('create c-1 title="close demo-4; $(touch pwned) `id`"\n')
+    assert run(capsys, "apply", path, "--apply")[0] == 0
+    (call,) = env.calls()
+    assert call[0] == "create" and call[1].startswith("--title=close demo-4;")
+    assert not (env.root / "pwned").exists()
+    assert env.issues()["demo-4"]["status"] == "open"

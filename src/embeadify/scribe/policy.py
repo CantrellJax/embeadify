@@ -1,0 +1,83 @@
+"""The scribe policy file (TOML). Live writes need `--live` AND `live = true` here."""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+ACTIONS = ("create", "fold", "dup", "drop")
+
+
+class PolicyError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Policy:
+    live: bool = False
+    policy_version: str = "builtin-1"
+    allowed_actions: tuple[str, ...] = ACTIONS
+    dup_threshold: float = 0.95  # built-in recommender: similarity needed to say `dup`
+    min_similarity: float = 0.85  # executor floor for any dup/fold/drop target
+    min_confidence: float = 0.8  # executor floor on the recommendation's confidence
+    max_title: int = 200
+    max_body: int = 8000
+    min_priority: int = 1  # a producer's P0 is created as P1: urgency is a guess, never a privilege
+    match_command: tuple[str, ...] = ("embead", "match")
+    recommender_command: tuple[str, ...] = ()
+
+
+def _check(key: str, value, kind) -> object:
+    if kind == "strs":
+        ok = isinstance(value, list) and all(isinstance(v, str) and v for v in value)
+    elif kind is float:
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1
+    elif kind is int:
+        ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    else:
+        ok = isinstance(value, kind)
+    if not ok:
+        raise PolicyError(f"policy key {key!r} has the wrong type or range")
+    return value
+
+
+def load(path: Path | None) -> Policy:
+    if path is None:
+        return Policy()
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise PolicyError(f"cannot read policy {path}: {error}") from error
+    table = data.get("scribe", {})
+    if not isinstance(table, dict) or set(data) - {"scribe"}:
+        raise PolicyError("policy must contain only a [scribe] table")
+    known = {
+        "live": bool,
+        "policy_version": str,
+        "allowed_actions": "strs",
+        "dup_threshold": float,
+        "min_similarity": float,
+        "min_confidence": float,
+        "max_title": int,
+        "max_body": int,
+        "min_priority": int,
+        "match_command": "strs",
+        "recommender_command": "strs",
+    }
+    if unknown := sorted(set(table) - set(known)):
+        raise PolicyError(f"unknown policy keys: {', '.join(unknown)}")
+    values = {k: _check(k, v, known[k]) for k, v in table.items()}
+    if "allowed_actions" in values:
+        bad = set(values["allowed_actions"]) - set(ACTIONS)
+        if bad:
+            raise PolicyError(f"unknown actions in allowed_actions: {', '.join(sorted(bad))}")
+        values["allowed_actions"] = tuple(dict.fromkeys(["create", *values["allowed_actions"]]))
+    for key in ("match_command", "recommender_command"):
+        if key in values:
+            values[key] = tuple(values[key])
+    if values.get("min_priority", 1) > 4 or not 1 <= values.get("max_title", 200) <= 500:
+        raise PolicyError("min_priority must be 0-4 and max_title 1-500")
+    if not 1 <= values.get("max_body", 8000) <= 50_000:
+        raise PolicyError("max_body must be 1-50000")
+    return Policy(**values)

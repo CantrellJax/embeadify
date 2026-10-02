@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, bd, decisions, doctor, engine, plan, snapshot
+from .scribe import cli as scribe_cli
 
 EXIT_OK, EXIT_PARTIAL, EXIT_ERROR = 0, 1, 2
 
@@ -96,6 +97,7 @@ def _emit(args, mode_label: str, items, target: str, undo_path, summary: dict) -
                     "new": i.new,
                     "detail": i.detail,
                     "message": i.message,
+                    "created_id": i.created_id or None,
                     "retry": i.retry if i.outcome == "failed" else None,
                 }
                 for i in items
@@ -293,6 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="check bd and show what would be written to")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_doctor)
+    scribe_cli.add_parsers(sub)
     return parser
 
 
