@@ -137,6 +137,7 @@ def external(
             "allowed_actions": list(policy.allowed_actions),
             "min_similarity": policy.min_similarity,
             "min_confidence": policy.min_confidence,
+            "llm_min_similarity": policy.llm_min_similarity,
         },
     }
 

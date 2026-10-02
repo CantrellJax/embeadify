@@ -26,6 +26,8 @@ class Plan:
     recommended: str
     target_id: str | None = None
     parent: str | None = None
+    placement_rule: str | None = None  # which rule chose the parent of a create (None: not a create)
+    unplaced: bool = False  # a create that no rule could place: `scribe report` lists it
     reasons: list[str] = field(default_factory=list)  # why the action changed or the fallback was used
     adjustments: list[str] = field(default_factory=list)  # edits that did not change the action
     items: list[engine.Item] = field(default_factory=list)
@@ -42,6 +44,41 @@ class Plan:
 
 def _live(snap: snapshot.Snapshot, ident: str | None) -> bool:
     return ident is not None and ident in snap and snap[ident].status != "closed"
+
+
+def _placeable(snap: snapshot.Snapshot, ident: str | None, policy: Policy) -> bool:
+    """A parent for placement must exist in the fresh snapshot and be live (never closed)."""
+    if not _live(snap, ident):
+        return False
+    return policy.allow_deferred_parent or snap[ident].status != "deferred"
+
+
+def _placement_choices(c: dict, rec: Recommendation, fold_origin, neighbors, snap, policy: Policy):
+    """(rule, parent id or None) in precedence order. Lazily evaluated; the first placeable one wins."""
+    yield "recommender_parent", rec.parent
+    yield "fold_target_parent", snap[fold_origin].parent if fold_origin else None
+    yield "candidate_hint", c.get("parent")  # (a)
+    source = c["source"].get("bead")  # (b)
+    yield "source_bead_parent", snap[source].parent if source in snap else None
+    for n in sorted(neighbors, key=lambda n: (-n.similarity, n.issue_id)):  # (c)
+        if n.similarity < policy.placement_min_similarity:
+            break
+        if _live(snap, n.issue_id) and _placeable(snap, snap[n.issue_id].parent, policy):
+            yield "neighbor_parent", snap[n.issue_id].parent
+            break
+    yield "type_parent", policy.type_parent.get(c["type"])
+    yield "default_parent", policy.default_parent  # (d)
+
+
+def _place(c, rec, fold_origin, neighbors, snap, policy: Policy, out: Plan) -> None:
+    for rule, choice in _placement_choices(c, rec, fold_origin, neighbors, snap, policy):
+        if choice is None:
+            continue
+        if _placeable(snap, choice, policy):
+            out.parent, out.placement_rule = choice, rule
+            return
+        out.adjustments.append(f"parent_not_live_or_unknown:{choice}")
+    out.placement_rule, out.unplaced = "unplaced", True  # (e)
 
 
 def _source_line(c: dict) -> str:
@@ -165,14 +202,7 @@ def plan(
             downgrade(problem)
     if out.action == "create":
         out.target_id = None
-        choices = [rec.parent, snap[fold_origin].parent if fold_origin else None, c.get("parent")]
-        for choice in choices:
-            if choice is None:
-                continue
-            if _live(snap, choice):
-                out.parent = choice
-                break
-            out.adjustments.append(f"parent_not_live_or_unknown:{choice}")
+        _place(c, rec, fold_origin, neighbors, snap, policy, out)
         priority_note = ""
         if c["priority"] < policy.min_priority:
             out.adjustments.append("priority_clamped")

@@ -1,0 +1,30 @@
+# Example scribe policy for a tracker with one long-lived container epic per area.
+# Every id below is synthetic: replace them with ids from your own tracker.
+# Shadow mode is the default; live writes need this file AND `scribe run --live`.
+[scribe]
+live = false
+policy_version = "example-1"
+
+# Which actions the recommender may ask for besides create (create is always allowed).
+allowed_actions = ["dup", "fold"]
+
+# Executor floors for any dup / fold / drop target.
+min_similarity = 0.85
+min_confidence = 0.8
+dup_threshold = 0.95          # built-in recommender: similarity needed to say dup
+min_priority = 1              # a producer-declared P0 is created as P1
+
+# Placement of a created bead with no usable parent hint, in this order:
+# candidate parent hint, the parent of source.bead, the parent of the most similar live neighbor
+# (similarity >= placement_min_similarity), type_parent, default_parent, else left unplaced (reported).
+placement_min_similarity = 0.6
+default_parent = "example-inbox"
+allow_deferred_parent = true  # a deferred parent counts as live; a closed one never does
+
+[scribe.type_parent]
+bug = "example-bugs"
+chore = "example-maintenance"
+
+# Reference LLM recommender (see docs/scribe.md): skipped below this top-neighbor similarity.
+# To use it: scribe run --recommender embeadify-recommend
+# llm_min_similarity = 0.55

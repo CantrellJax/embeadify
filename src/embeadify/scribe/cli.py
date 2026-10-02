@@ -149,6 +149,8 @@ def cmd_report(args) -> int:
     final = Counter()
     downgraded = []
     degraded = []
+    unplaced = []
+    placed = Counter()
     for entry in latest.values():
         plan = entry.get("executor_plan") or {}
         rec = entry.get("recommendation") or {}
@@ -164,6 +166,10 @@ def cmd_report(args) -> int:
                     "reasons": plan.get("reasons", []),
                 }
             )
+        if plan.get("placement_rule"):
+            placed[plan["placement_rule"]] += 1
+        if plan.get("unplaced"):
+            unplaced.append(entry["candidate_id"])
         if entry.get("degraded"):
             degraded.append({"candidate_id": entry["candidate_id"], "degraded": entry["degraded"]})
     data = {
@@ -172,6 +178,8 @@ def cmd_report(args) -> int:
         "executor": dict(sorted(final.items())),
         "downgraded": downgraded,
         "degraded": degraded,
+        "placement": dict(sorted(placed.items())),
+        "unplaced": unplaced,
     }
     if args.json:
         print(json.dumps(data, sort_keys=True))
@@ -182,6 +190,10 @@ def cmd_report(args) -> int:
     print(f"downgraded ({len(downgraded)}):")
     for d in downgraded:
         print(f"  {d['candidate_id']}: {d['recommended']} -> {d['final']}  [{', '.join(d['reasons'])}]")
+    print("placement:   " + (", ".join(f"{k} {v}" for k, v in sorted(placed.items())) or "none"))
+    print(f"unplaced creates ({len(unplaced)}):")
+    for cid in unplaced:
+        print(f"  {cid}")
     print(f"degraded inputs ({len(degraded)}):")
     for d in degraded:
         print(f"  {d['candidate_id']}: {d['degraded']}")

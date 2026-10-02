@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from ..decisions import CREATE_TYPES
+from ..sanitize import is_id
 
 ACTIONS = ("create", "fold", "dup", "drop")
 
@@ -26,6 +29,11 @@ class Policy:
     min_priority: int = 1  # a producer's P0 is created as P1: urgency is a guess, never a privilege
     match_command: tuple[str, ...] = ("embead", "match")
     recommender_command: tuple[str, ...] = ()
+    placement_min_similarity: float = 0.6  # a neighbor's parent places a create only at this similarity
+    default_parent: str | None = None  # placement rule (d): a container for otherwise unplaced creates
+    type_parent: dict[str, str] = field(default_factory=dict)  # placement: issue type -> parent id
+    allow_deferred_parent: bool = True  # a deferred parent is live for placement; closed never is
+    llm_min_similarity: float = 0.55  # the reference LLM recommender skips the model below this
 
 
 def _check(key: str, value, kind) -> object:
@@ -33,6 +41,10 @@ def _check(key: str, value, kind) -> object:
         ok = isinstance(value, list) and all(isinstance(v, str) and v for v in value)
     elif kind is float:
         ok = isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= 1
+    elif kind == "id":
+        ok = is_id(value)
+    elif kind == "idmap":
+        ok = isinstance(value, dict) and all(k in CREATE_TYPES and is_id(v) for k, v in value.items())
     elif kind is int:
         ok = isinstance(value, int) and not isinstance(value, bool) and value >= 0
     else:
@@ -64,6 +76,11 @@ def load(path: Path | None) -> Policy:
         "min_priority": int,
         "match_command": "strs",
         "recommender_command": "strs",
+        "placement_min_similarity": float,
+        "default_parent": "id",
+        "type_parent": "idmap",
+        "allow_deferred_parent": bool,
+        "llm_min_similarity": float,
     }
     if unknown := sorted(set(table) - set(known)):
         raise PolicyError(f"unknown policy keys: {', '.join(unknown)}")
