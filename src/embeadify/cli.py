@@ -135,14 +135,23 @@ def _emit(args, mode_label: str, items, target: str, undo_path, summary: dict) -
     )
 
 
+DEFAULT_JOBS = 2
+JOBS_NOTE = (
+    "note: parallel bd writes load the shared beads server; keep -j low for bulk runs "
+    "and avoid running heavy DB jobs on the server box at the same time"
+)
+
+
 def _run(args, mode: str) -> int:
     ops = _read_ops(args.file)
     if not ops:
         print("embeadify: no operations found (everything is commented out?)", file=sys.stderr)
         return EXIT_ERROR
-    jobs = getattr(args, "jobs", 4)
+    jobs = getattr(args, "jobs", DEFAULT_JOBS)
     if not 1 <= jobs <= engine.MAX_WORKERS:
         return _err(f"-j must be between 1 and {engine.MAX_WORKERS}")
+    if jobs > DEFAULT_JOBS:
+        print(JOBS_NOTE, file=sys.stderr)
     try:
         if args.apply:
             report = doctor.inspect()
@@ -244,8 +253,8 @@ def _add_exec_flags(p: argparse.ArgumentParser) -> None:
         "-j",
         "--jobs",
         type=int,
-        default=4,
-        help=f"parallel bd processes (default 4, max {engine.MAX_WORKERS})",
+        default=DEFAULT_JOBS,
+        help=f"parallel bd processes (default {DEFAULT_JOBS}, max {engine.MAX_WORKERS})",
     )
     p.add_argument("--timeout", type=float, default=60.0, help="per-op timeout in seconds (default 60)")
     p.add_argument(

@@ -84,7 +84,7 @@ target's existing acceptance already covers the finding.
 - Candidate text is data. It is never executed, split into commands, or followed as a reference or URL.
   Titles are one line, control and bidi characters are stripped, length is capped; bodies are capped;
   producer text containing a marker line is defanged so it cannot forge or block another candidate.
-- Every `bd` call is one array of single `--flag=value` words (`create`, or `update ID --append-notes=`).
+- Every `bd` call is one array of single `--flag=value` words (`create`, or `update ID --append-notes=`). A create with a parent always carries `--no-inherit-labels`, so a scribe-created bead never picks up the parent's labels (they once leaked a `theme` label onto 13 beads).
   The scribe never calls `close`, `reopen`, `duplicate`, `parent`, `priority` or label changes.
 - Only `create`, `dup`, `fold`, `drop` exist. Anything else, or invalid output, becomes a create.
 - `dup`/`fold`/`drop` need a `target_id` that exists in the snapshot AND is one of the neighbors `embead`
