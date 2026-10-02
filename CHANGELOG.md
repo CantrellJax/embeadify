@@ -17,4 +17,7 @@ Initial scaffold.
   `default_parent`, else flagged `unplaced` (listed by `scribe report`).
 - `embeadify-recommend`: opt-in reference LLM recommender (stdlib only, backend via `EMBEADIFY_LLM_CMD`,
   strict validation, falls back to create). Example policy in `examples/scribe-policy.toml`.
+- Scribe trainee loop: `scribe replay` (shadow replay of existing beads with temporal fairness), `judge-pack`,
+  `label` (append-only `labels.jsonl`), `metrics`, `tune` (offline threshold grid, never edits policy). Shadow log
+  rows now also record `candidate`, `recommender`, `thresholds`. See `docs/scribe-trainee.md`.
 - `embeadify doctor`: `bd` presence, version, workspace, and the redacted write target.

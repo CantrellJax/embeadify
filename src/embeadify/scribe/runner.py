@@ -10,6 +10,8 @@ from . import executor, match, recommend
 from . import store as st
 from .policy import Policy
 
+LOG_BODY = 4000
+
 
 @dataclass
 class Summary:
@@ -37,6 +39,64 @@ def _entry(sub: st.Submission, mode: str, policy: Policy) -> dict:
 def _receipt(entry: dict, **extra) -> dict:
     keep = ("candidate_id", "hash", "receipt_id", "policy_version", "mode")
     return {"schema_version": 1, "decided_at": st.now(), **{k: entry[k] for k in keep}, **extra}
+
+
+def candidate_view(c: dict) -> dict:
+    """The candidate as the log keeps it: enough to re-judge the decision offline (body capped)."""
+    view = {k: v for k, v in c.items() if k != "body"}
+    view["body"] = c["body"][:LOG_BODY]
+    return view
+
+
+def decide(
+    c: dict,
+    neighbors: list[match.Neighbor],
+    degraded: str,
+    snap,
+    policy: Policy,
+    recommender: tuple[str, ...],
+    timeout: float,
+) -> tuple[recommend.Recommendation, executor.Plan, dict]:
+    """Recommend, then let the executor decide. Returns (recommendation, plan, the log fields).
+
+    Shared by the queue runner and `scribe replay`. It never writes anything.
+    """
+    notes = [degraded] if degraded else []
+    if recommender:
+        outcome = recommend.external(recommender, c, neighbors, policy, timeout)
+        rec, notes = outcome.recommendation, notes + outcome.notes
+    else:
+        rec = recommend.builtin(c, neighbors, policy)
+    plan = executor.plan(c, rec, neighbors, snap, policy, notes)
+    skipped = any("model not called" in e for e in rec.evidence)
+    fields = {
+        "candidate": candidate_view(c),
+        "recommendation": rec.to_dict(),
+        "recommender": {
+            "kind": "external" if recommender else "builtin",
+            "model_called": bool(recommender) and not skipped,
+        },
+        "thresholds": {
+            "min_similarity": policy.min_similarity,
+            "min_confidence": policy.min_confidence,
+            "llm_min_similarity": policy.llm_min_similarity,
+            "placement_min_similarity": policy.placement_min_similarity,
+        },
+        "neighbors": [n.to_dict() for n in neighbors],
+        "degraded": degraded or None,
+        "executor_plan": {
+            "action": plan.action,
+            "target_id": plan.target_id,
+            "parent": plan.parent,
+            "placement_rule": plan.placement_rule,
+            "unplaced": plan.unplaced,
+            "downgraded": plan.downgraded,
+            "reasons": plan.reasons,
+            "adjustments": plan.adjustments,
+            "steps": plan.steps(),
+        },
+    }
+    return rec, plan, fields
 
 
 def process(
@@ -86,29 +146,8 @@ def process(
         return
 
     neighbors, degraded = match.fetch(c, policy.match_command, timeout)
-    notes = [degraded] if degraded else []
-    if recommender:
-        outcome = recommend.external(recommender, c, neighbors, policy, timeout)
-        rec, notes = outcome.recommendation, notes + outcome.notes
-    else:
-        rec = recommend.builtin(c, neighbors, policy)
-    plan = executor.plan(c, rec, neighbors, snap, policy, notes)
-    entry.update(
-        recommendation=rec.to_dict(),
-        neighbors=[n.to_dict() for n in neighbors],
-        degraded=degraded or None,
-        executor_plan={
-            "action": plan.action,
-            "target_id": plan.target_id,
-            "parent": plan.parent,
-            "placement_rule": plan.placement_rule,
-            "unplaced": plan.unplaced,
-            "downgraded": plan.downgraded,
-            "reasons": plan.reasons,
-            "adjustments": plan.adjustments,
-            "steps": plan.steps(),
-        },
-    )
+    rec, plan, fields = decide(c, neighbors, degraded, snap, policy, recommender, timeout)
+    entry.update(fields)
     if not live:
         entry["outcome"] = "shadow"
         summary.shadowed += 1

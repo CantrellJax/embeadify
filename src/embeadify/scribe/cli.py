@@ -9,9 +9,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from .. import bd, doctor
+from .. import bd, doctor, snapshot
 from . import candidate as cand
-from . import runner
+from . import judge, metrics, replay, runner, tune
+from . import labels as lb
 from . import store as st
 from .policy import PolicyError, load
 
@@ -262,6 +263,146 @@ def cmd_run(args) -> int:
     return EXIT_PARTIAL if summary.failed or summary.invalid else EXIT_OK
 
 
+def _policy(args, queue: st.Queue):
+    path = Path(args.policy) if args.policy else (queue.root / "policy.toml")
+    return load(path if args.policy or path.exists() else None)
+
+
+def _recommender(args, policy) -> tuple[str, ...]:
+    if args.recommender:
+        return tuple(shlex.split(args.recommender, posix=os.name != "nt"))
+    return policy.recommender_command
+
+
+def cmd_replay(args) -> int:
+    queue = _queue(args)
+    try:
+        policy = _policy(args, queue)
+        since = replay.parse_since(args.since) if args.since else None
+        ids = replay.read_ids_file(args.ids_file) if args.ids_file else None
+    except (PolicyError, ValueError, OSError) as error:
+        return _err(str(error))
+    print(
+        f"mode: SHADOW REPLAY (nothing is written to the tracker or queued); policy {policy.policy_version}",
+        file=sys.stderr,
+    )
+    try:
+        raw = bd.run_json(snapshot.LIST_ARGS)  # the ONE tracker read
+    except bd.BdError as error:
+        return _err(str(error))
+    summary = replay.replay(
+        queue,
+        policy,
+        raw,
+        since=since,
+        ids=ids,
+        limit=args.limit,
+        again=args.again,
+        include_ephemeral=args.include_ephemeral,
+        include_duplicates=args.include_duplicates,
+        recommender=_recommender(args, policy),
+        neighbor_limit=args.neighbor_limit,
+        timeout=args.timeout,
+    )
+    data = {
+        "selected": summary.selected,
+        "replayed": summary.replayed,
+        "already_replayed": summary.already,
+        "skipped": dict(sorted(summary.skipped.items())),
+        "degraded": summary.degraded,
+        "details": summary.details,
+    }
+    if args.json:
+        print(json.dumps(data, sort_keys=True))
+    else:
+        skipped = ", ".join(f"{k} {v}" for k, v in sorted(summary.skipped.items())) or "none"
+        print(
+            f"selected {summary.selected}: replayed {summary.replayed}, already replayed {summary.already}"
+            f" (use --again), skipped: {skipped}, degraded matcher {summary.degraded}"
+        )
+        for line in summary.details:
+            print(f"  {line}")
+    return EXIT_OK
+
+
+def cmd_judge_pack(args) -> int:
+    queue = _queue(args)
+    try:
+        rows = lb.since_filter(list(lb.latest_rows(queue).values()), args.since)
+    except lb.LabelError as error:
+        return _err(str(error))
+    if not args.include_labeled:
+        done = lb.current_labels(queue)
+        rows = [r for r in rows if lb.key(r) not in done]
+    rows = [r for r in rows if r.get("candidate") or r.get("replay")]
+    pack = judge.build(rows, args.n, args.seed, queue)
+    text = json.dumps(pack, indent=2, sort_keys=True) if args.json else judge.render_markdown(pack)
+    if args.out:
+        try:
+            Path(args.out).write_text(text + "\n", encoding="utf-8")
+        except OSError as error:
+            return _err(f"cannot write {args.out}: {error}")
+        print(f"wrote {len(pack['items'])} items to {args.out}")
+    else:
+        print(text)
+    return EXIT_OK
+
+
+def cmd_label(args) -> int:
+    queue = _queue(args)
+    rows = [r for k, r in lb.latest_rows(queue).items() if k[0] == args.candidate_id]
+    if args.policy_version is not None:
+        rows = [r for r in rows if r.get("policy_version") == args.policy_version]
+    if not rows:
+        return _err(
+            f"no logged decision for {args.candidate_id}"
+            + (f" under policy_version {args.policy_version!r}" if args.policy_version is not None else "")
+        )
+    row = sorted(rows, key=lambda r: r.get("ts", ""))[-1]  # the newest decision
+    try:
+        lb.validate(row, args.verdict, args.of, args.better)
+        if args.of or args.better:
+            lb.check_ids(row, args.of, args.better, replay.raw_items(bd.run_json(snapshot.LIST_ARGS)))
+    except lb.LabelError as error:
+        return _err(str(error))
+    except bd.BdError as error:
+        return _err(f"cannot check the ids against the tracker: {error}")
+    entry = lb.append(queue, row, args.verdict, of=args.of, better=args.better, note=args.note, by=args.by)
+    print(
+        f"labeled {entry['candidate_id']} ({entry['policy_version'] or 'no policy_version'},"
+        f" decision {entry['decision_action']}): {entry['verdict']}"
+    )
+    return EXIT_OK
+
+
+def cmd_metrics(args) -> int:
+    queue = _queue(args)
+    try:
+        rows = lb.since_filter(list(lb.latest_rows(queue).values()), args.since)
+    except lb.LabelError as error:
+        return _err(str(error))
+    data = metrics.compute(rows, lb.current_labels(queue))
+    print(json.dumps(data, sort_keys=True) if args.json else metrics.render(data, args.by_version))
+    return EXIT_OK
+
+
+def cmd_tune(args) -> int:
+    queue = _queue(args)
+    try:
+        base = _policy(args, queue)
+    except PolicyError as error:
+        return _err(str(error))
+    data = tune.run(lb.latest_rows(queue), lb.current_labels(queue), base, args.min_labels)
+    if args.json:
+        data["policy_snippet"] = (
+            tune.snippet(data["recommendation"]["setting"]) if data["recommendation"] else None
+        )
+        print(json.dumps(data, sort_keys=True))
+    else:
+        print(tune.render(data))
+    return EXIT_OK
+
+
 def add_parsers(sub) -> None:
     scribe = sub.add_parser(
         "scribe", help="bead intake: submit candidates, run the scribe (shadow by default)"
@@ -303,3 +444,56 @@ def add_parsers(sub) -> None:
     p.add_argument("--limit", type=int, help="process at most N candidates per pass")
     p.add_argument("--timeout", type=float, default=120.0, help="per bd/embead/recommender call, seconds")
     p.set_defaults(func=cmd_run)
+
+    p = ssub.add_parser(
+        "replay", help="judge existing beads as fresh submissions, SHADOW only (never writes the tracker)"
+    )
+    common(p)
+    when = p.add_mutually_exclusive_group()
+    when.add_argument("--since", help="only beads created on or after this UTC date (YYYY-MM-DD)")
+    when.add_argument("--ids-file", help="file of bead ids, one per line (# comments allowed)")
+    p.add_argument("--limit", type=int, help="replay at most N beads, oldest first")
+    p.add_argument(
+        "--again", action="store_true", help="replay beads already replayed under this policy_version"
+    )
+    p.add_argument("--include-ephemeral", action="store_true")
+    p.add_argument("--include-duplicates", action="store_true", help="include beads closed as duplicates")
+    p.add_argument("--policy", help="policy TOML (default <queue-dir>/policy.toml if present)")
+    p.add_argument("--recommender", help="external recommender command; default built-in")
+    p.add_argument(
+        "--neighbor-limit", type=int, default=10, help="neighbors kept per bead after the temporal filter"
+    )
+    p.add_argument("--timeout", type=float, default=120.0)
+    p.set_defaults(func=cmd_replay)
+
+    p = ssub.add_parser("judge-pack", help="a stratified sample of shadow decisions for an adjudicator")
+    common(p)
+    p.add_argument("--n", type=int, default=20)
+    p.add_argument("--since", help="only decisions logged on or after YYYY-MM-DD")
+    p.add_argument("--seed", default="0", help="same seed + same log = same pack")
+    p.add_argument("--include-labeled", action="store_true", help="also sample already-labeled decisions")
+    p.add_argument("--out", help="write the pack to this file instead of stdout")
+    p.set_defaults(func=cmd_judge_pack)
+
+    p = ssub.add_parser("label", help="append one adjudicator verdict to labels.jsonl (immutable)")
+    common(p, json_flag=False)
+    p.add_argument("candidate_id")
+    p.add_argument("verdict", choices=list(lb.VERDICTS), metavar="VERDICT", help=", ".join(lb.VERDICTS))
+    p.add_argument("--of", help="should_have_been_dup: the live bead that already covers it")
+    p.add_argument("--better", help="bad_placement: the parent it belongs under")
+    p.add_argument("--note", default="")
+    p.add_argument("--by", default="", help="who judged (default: your user name)")
+    p.add_argument("--policy-version", help="the decision's policy_version (default: the newest decision)")
+    p.set_defaults(func=cmd_label)
+
+    p = ssub.add_parser("metrics", help="decision mix, agreement with the filer, and label-based precision")
+    common(p)
+    p.add_argument("--since", help="only decisions logged on or after YYYY-MM-DD")
+    p.add_argument("--by-version", action="store_true", help="break the table down by policy_version")
+    p.set_defaults(func=cmd_metrics)
+
+    p = ssub.add_parser("tune", help="offline threshold search over labeled decisions; never edits policy")
+    common(p)
+    p.add_argument("--min-labels", type=int, default=tune.DEFAULT_MIN_LABELS)
+    p.add_argument("--policy", help="base policy TOML (default <queue-dir>/policy.toml if present)")
+    p.set_defaults(func=cmd_tune)

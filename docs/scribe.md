@@ -24,6 +24,7 @@ the tracker. The scribe never blocks `bd create`: the audited direct path stays.
 | `embeadify scribe receipts [--action A]` | One line per submission: receipt id, state, action, bead. |
 | `embeadify scribe run [--once] [--live] [--policy F] [--recommender CMD] [--interval S] [--limit N]` | Process the queue. Shadow unless `--live` AND the policy allows it. |
 | `embeadify scribe report` | Counts by recommended and executed action; every downgrade and degraded input. |
+| `embeadify scribe replay`, `judge-pack`, `label`, `metrics`, `tune` | The trainee loop: dogfood on existing beads in shadow, label, measure, tune. See [scribe-trainee.md](scribe-trainee.md). |
 
 Exit codes: `0` ok; `1` a candidate failed to write or a submission was invalid (it stays queued);
 `2` refusal (conflict on submit, live not allowed, second concurrent run, bad policy, `bd` unusable).
