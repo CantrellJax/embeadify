@@ -299,6 +299,81 @@ def test_noop_is_skipped_not_written(env, capsys):
     assert code == 0 and env.writes() == [] and "no-op" in out
 
 
+# ---- assign and held beads -----------------------------------------------------------------------
+
+
+def held_env(env):
+    issues = [dict(i) for i in env.issues().values()]
+    for issue in issues:
+        if issue["id"] == "demo-5":
+            issue["status"], issue["assignee"] = "in_progress", "someone"
+    env.set_issues(issues)
+
+
+def test_grammar_assign_dash_clears():
+    ops = decisions.parse_text("assign a-1 alice\nassign a-2 -\n")
+    assert [(o.kind, o.arg) for o in ops] == [("assign", "alice"), ("assign", "")]
+    assert ops[1].render() == "assign a-2 -"
+    with pytest.raises(decisions.GrammarError):
+        decisions.parse_text("assign a-1\nassign a-1 two words\n")
+
+
+def test_assign_dry_run_apply_and_undo_restore_the_old_assignee(env, capsys):
+    held_env(env)
+    path = env.decisions("assign demo-5 -\nassign demo-4 alice\nassign demo-3 -\n")
+    code, out, _ = run(capsys, "apply", path)
+    assert code == 0 and "someone -> (none)" in out and "(none) -> alice" in out
+    assert "assignee already (none)" in out and env.writes() == []
+    undo = env.root / "u.decisions"
+    code, out, _ = run(capsys, "apply", path, "--apply", "--undo-file", str(undo), "--json")
+    payload = json.loads(out)
+    assert code == 0 and payload["summary"]["ok"] == 2
+    assert ["update", "demo-5", "--assignee="] in env.calls()
+    state = env.issues()
+    assert state["demo-5"]["assignee"] == "" and state["demo-4"]["assignee"] == "alice"
+    text = undo.read_text()
+    assert "assign demo-5 someone" in text and "assign demo-4 -" in text
+    code, out, err = run(capsys, "undo", str(undo), "--apply", "--undo-file", "r.decisions")
+    assert code == 0, out + err
+    state = env.issues()
+    assert state["demo-5"]["assignee"] == "someone" and state["demo-4"]["assignee"] == ""
+
+
+def test_held_bead_warns_in_dry_run_and_is_skipped_on_apply(env, capsys):
+    held_env(env)
+    path = env.decisions("priority demo-5 0\nnote demo-5 still here\npriority demo-4 0\n")
+    code, out, err = run(capsys, "apply", path)
+    assert code == 0 and "HELD     line 1" in out and "--allow-held" in err
+    code, out, _ = run(capsys, "apply", path, "--apply", "--undo-file", "u.decisions", "--json")
+    payload = json.loads(out)
+    assert code == 1 and payload["summary"]["held"] == 1 and payload["summary"]["ok"] == 2
+    assert payload["ops"][0]["outcome"] == "skipped" and payload["ops"][0]["message"].startswith("held")
+    state = env.issues()
+    assert state["demo-5"]["priority"] == 2 and "still here" in state["demo-5"]["notes"]
+    assert "demo-5 2" not in Path("u.decisions").read_text()
+
+
+def test_allow_held_or_freeing_the_bead_first_lets_the_op_run(env, capsys):
+    held_env(env)
+    assert (
+        run(
+            capsys,
+            "apply",
+            env.decisions("priority demo-5 0\n"),
+            "--apply",
+            "--allow-held",
+            "--undo-file",
+            "a.u",
+        )[0]
+        == 0
+    )
+    assert env.issues()["demo-5"]["priority"] == 0
+    held_env(env)
+    freed = env.decisions("assign demo-5 -\nstatus demo-5 open\n", name="f.decisions")
+    assert run(capsys, "apply", freed, "--apply", "--undo-file", "b.u")[0] == 0
+    assert env.issues()["demo-5"]["status"] == "open"
+
+
 # ---- drift, failure, guard ----------------------------------------------------------------------
 
 

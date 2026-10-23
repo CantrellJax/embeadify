@@ -26,12 +26,13 @@ TRANSIENT = re.compile(
 )
 GUARD = re.compile(r"guard|refusing|not allowed|read-?only|permission denied", re.I)
 OPEN_STATUSES = {"open", "in_progress", "blocked", "deferred", "hooked", "pinned"}
+HELD_KINDS = ("close", "dup", "priority", "status")  # ops refused on a held bead without --allow-held
 
 
 @dataclass
 class Item:
     op: Op
-    verdict: str = "apply"  # apply | noop | refused
+    verdict: str = "apply"  # apply | noop | held | refused
     old: str = ""
     new: str = ""
     detail: str = ""
@@ -105,6 +106,8 @@ def _argv(op: Op) -> list[str]:
         return ["duplicate", i, f"--of={a}"]
     if k == "priority":
         return ["update", i, f"--priority={a}"]
+    if k == "assign":
+        return ["update", i, f"--assignee={a}"]
     if k == "label-add":
         return ["update", i, f"--add-label={a}"]
     if k == "label-rm":
@@ -136,6 +139,7 @@ def validate(
     mode: str = "apply",
     allow_closed_parent: bool = False,
     force_dependents: bool = False,
+    allow_held: bool = False,
 ) -> list[Item]:
     """Check each op in order against an evolving copy of the snapshot."""
     undo_mode = mode == "undo"
@@ -162,6 +166,10 @@ def validate(
             item.verdict, item.detail = "noop", msg
 
         k = op.kind
+        if k in HELD_KINDS and snapshot.is_held(cur) and not allow_held and not undo_mode:
+            item.verdict = "held"
+            item.detail = f"in progress, held by {cur.assignee}; pass --allow-held to override"
+            continue
         if k in ("close", "dup"):
             target = op.arg if k == "dup" else None
             if k == "dup":
@@ -232,6 +240,13 @@ def validate(
             else:
                 item.irreversible = True
             cur.priority = n
+        elif k == "assign":
+            if cur.assignee == op.arg:
+                noop(f"assignee already {op.arg or '(none)'}")
+                continue
+            item.old, item.new = cur.assignee or "(none)", op.arg or "(none)"
+            item.undo = [Op("assign", op.id, cur.assignee)]
+            cur.assignee = op.arg
         elif k == "label-add":
             if op.arg in cur.labels:
                 noop(f"label {op.arg} already present")
@@ -386,7 +401,7 @@ def detect_drift(items: list[Item], before: snapshot.Snapshot, after: snapshot.S
             if new is None:
                 drift[ident] = "issue no longer exists"
             elif old.watch() != new.watch():
-                names = ("status", "parent", "priority", "labels")
+                names = ("status", "parent", "priority", "labels", "assignee")
                 changed = [
                     f"{n} {a} -> {b}"
                     for n, a, b in zip(names, old.watch(), new.watch(), strict=True)

@@ -184,6 +184,8 @@ def main():
                 issue["labels"] = [x for x in issue.get("labels", []) if x != v]
             if (v := flag(args, "status")) is not None:
                 issue["status"] = v
+            if (v := flag(args, "assignee")) is not None:
+                issue["assignee"] = v
             if (v := flag(args, "append-notes")) is not None:
                 issue["notes"] = (issue.get("notes", "") + "\n" + v).strip()
         save(data)

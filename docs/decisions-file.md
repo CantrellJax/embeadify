@@ -9,6 +9,7 @@ a `#` preceded by two or more spaces (or a tab), so `close demo-1 fixed in PR #1
 | `parent ID NEW_PARENT` | `bd update ID --parent=NEW_PARENT` (`-` clears) | `parent ID old` (or `-`) |
 | `dup ID CANONICAL` | `bd duplicate ID --of=CANONICAL` | `reopen ID` |
 | `priority ID N` | `bd update ID --priority=N` (0-4 or P0-P4) | `priority ID old` |
+| `assign ID WHO` | `bd update ID --assignee=WHO` (`-` clears: frees the bead) | `assign ID old` (or `-`) |
 | `label-add ID LABEL` | `bd update ID --add-label=LABEL` | `label-rm ID LABEL` |
 | `label-rm ID LABEL` | `bd update ID --remove-label=LABEL` | `label-add ID LABEL` |
 | `reopen ID` | `bd reopen ID` | `close ID ...` |
@@ -53,6 +54,15 @@ written:
   `--allow-closed-parent`);
 - a placeholder such as `<fill-in>` that was not replaced.
 
+## Held beads
+
+A bead that is `in_progress` with an assignee is held: someone is working it now. `close`, `dup`,
+`priority` and `status` on a held bead (as of that line, so an earlier `assign ID -` in the same file
+frees it) are not refusals: the dry run lists them as `HELD` and warns, and `--apply` skips just those
+lines (outcome `skipped`, message `held: ...`, left out of the undo file) and exits `1`. Pass
+`--allow-held` to run them. `note`, `assign`, labels, `parent` and `reopen` are not checked. `undo` never
+checks. The scribe's `claimed_target` guard uses the same test.
+
 An op that would change nothing (same priority, label already present, and so on) is reported as a no-op
 and skipped. Ops on the same issue run in file order inside one worker; ops on different issues run in
 parallel with no ordering guarantee. Use `-j 1` (a true serial path, same undo, drift and report behavior) when order across issues matters. The default is `-j 2` (max 8); more than 2 prints a note, because parallel `bd` writes load the shared beads server (a 77-call burst alongside a heavy DB job once took it down).
@@ -66,11 +76,11 @@ state that already matches, so replaying after a partial failure is safe.
 
 ## Exit codes
 
-`0` success; `1` an op failed or was skipped for drift; `2` usage error, invalid decisions, `bd` missing
+`0` success; `1` an op failed, was skipped for drift, or was held; `2` usage error, invalid decisions, `bd` missing
 or unusable, or a refusal to write.
 
 ## `--json`
 
 `apply` and `undo` print one JSON object: `mode`, `target`, `undo_file`, `summary`
-(`ok`, `skipped`, `failed`, `refused`, `would_apply`), and an `ops` array in file order with `op`,
+(`ok`, `skipped`, `failed`, `refused`, `held`, `would_apply`), and an `ops` array in file order with `op`,
 `verdict`, `outcome`, `old`, `new`, `detail`, `message`, and `retry` for failures.

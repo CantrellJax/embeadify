@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+- `assign ID WHO` decisions op: `bd update ID --assignee=WHO`; `assign ID -` clears the assignee (frees the
+  bead). Undo restores the old assignee from the snapshot. The drift check now also watches the assignee.
+- Held beads: `close`, `dup`, `priority` and `status` on a bead in progress with an assignee are flagged
+  `HELD` in the dry run and skipped on `--apply` (exit 1) unless `--allow-held`. `--json` summary gains
+  `held`. See `docs/decisions-file.md` "Held beads".
+
+## 0.1.0
 
 Initial scaffold.
 

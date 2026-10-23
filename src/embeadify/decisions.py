@@ -12,6 +12,7 @@ KINDS = {
     "parent": "one",
     "dup": "one",
     "priority": "one",
+    "assign": "one",
     "label-add": "one",
     "label-rm": "one",
     "reopen": "none",
@@ -41,7 +42,7 @@ class Op:
 
     def render(self) -> str:
         parts = [self.kind, self.id]
-        if self.arg != "" or self.kind in ("parent",):
+        if self.arg != "" or self.kind in ("parent", "assign"):
             parts.append(self.arg if self.arg != "" else "-")
         return " ".join(parts)
 
@@ -110,7 +111,7 @@ def parse_line(text: str, number: int = 0) -> Op | None:
             create_fields(rest)
         except ValueError as error:
             raise ValueError(f"line {number}: {error}") from error
-    if kind == "parent" and rest == "-":
+    if kind in ("parent", "assign") and rest == "-":
         rest = ""
     return Op(kind, ident, rest, number)
 

@@ -14,7 +14,7 @@ EXIT_OK, EXIT_PARTIAL, EXIT_ERROR = 0, 1, 2
 
 EPILOG = """exit codes:
   0  success (dry run clean, or every op applied or skipped as a no-op)
-  1  one or more ops failed or were skipped because of drift
+  1  one or more ops failed, were skipped because of drift, or were held (in progress with an assignee)
   2  usage error, invalid decisions, `bd` missing/unusable, or refusal to write
 """
 
@@ -113,6 +113,8 @@ def _emit(args, mode_label: str, items, target: str, undo_path, summary: dict) -
             print(f"REFUSED  line {i.op.line}: {i.op.render()}  -> {i.detail}")
         elif i.verdict == "noop":
             print(f"no-op    line {i.op.line}: {i.op.render()}  -> {i.detail}")
+        elif i.verdict == "held" and mode_label != "apply":
+            print(f"HELD     line {i.op.line}: {i.op.render()}  -> {i.detail}")
         elif mode_label == "dry-run":
             print(f"would    line {i.op.line}: {_show_item(i)}")
     if mode_label == "apply":
@@ -131,7 +133,8 @@ def _emit(args, mode_label: str, items, target: str, undo_path, summary: dict) -
         print(f"\nundo file: {undo_path}  (replay: embeadify undo {undo_path} --apply)")
     print(
         f"\nsummary: {summary['ok']} ok, {summary['skipped']} skipped, "
-        f"{summary['failed']} failed, {summary['refused']} refused, {summary['would_apply']} pending"
+        f"{summary['failed']} failed, {summary['refused']} refused, {summary['held']} held, "
+        f"{summary['would_apply']} pending"
     )
 
 
@@ -171,9 +174,11 @@ def _run(args, mode: str) -> int:
         mode=mode,
         allow_closed_parent=getattr(args, "allow_closed_parent", False),
         force_dependents=getattr(args, "force_dependents", False),
+        allow_held=getattr(args, "allow_held", False),
     )
     refused = [i for i in items if i.verdict == "refused"]
     pending = [i for i in items if i.verdict == "apply"]
+    held = [i for i in items if i.verdict == "held"]
 
     def summary() -> dict:
         return {
@@ -182,6 +187,7 @@ def _run(args, mode: str) -> int:
             + (0 if args.apply else sum(i.verdict == "noop" for i in items)),
             "failed": sum(i.outcome == "failed" for i in items),
             "refused": len(refused),
+            "held": len(held),
             "would_apply": 0 if args.apply else len(pending),
         }
 
@@ -190,10 +196,18 @@ def _run(args, mode: str) -> int:
         if refused:
             print("embeadify: invalid decisions; fix them first (nothing was written)", file=sys.stderr)
             return EXIT_ERROR
+        if held:
+            print(
+                f"embeadify: warning: {len(held)} line(s) target a held bead (in progress with an assignee);"
+                " --apply skips them unless --allow-held",
+                file=sys.stderr,
+            )
         return EXIT_OK
+    for i in held:
+        i.outcome, i.message = "skipped", f"held: {i.detail}"
     if not pending:
         _emit(args, "apply", items, target, None, summary())
-        return EXIT_OK
+        return EXIT_PARTIAL if held else EXIT_OK
 
     undo_path = Path(args.undo_file) if args.undo_file else engine.default_undo_path()
     try:
@@ -212,7 +226,9 @@ def _run(args, mode: str) -> int:
     _emit(args, "apply", items, target, undo_path, result)
     return (
         EXIT_PARTIAL
-        if result["failed"] or any(i.outcome == "skipped" and i.message.startswith("drift") for i in items)
+        if result["failed"]
+        or held
+        or any(i.outcome == "skipped" and i.message.startswith("drift") for i in items)
         else EXIT_OK
     )
 
@@ -293,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--allow-closed-parent", action="store_true", help="allow re-parenting under a closed issue"
+    )
+    p.add_argument(
+        "--allow-held",
+        action="store_true",
+        help="allow close/dup/priority/status on a bead in progress with an assignee",
     )
     p.set_defaults(func=cmd_apply)
 
