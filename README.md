@@ -59,6 +59,7 @@ close demo-3 superseded by demo-9
 parent demo-4 demo-2        # re-parent (use `-` to clear)
 dup demo-5 demo-6           # mark as duplicate of demo-6
 priority demo-7 1
+assign demo-8 -             # free an abandoned claim (or name a new assignee)
 label-add demo-7 reviewed
 ```
 
@@ -73,6 +74,7 @@ The full grammar is in [`docs/decisions-file.md`](docs/decisions-file.md).
 | Validation before writes | Unknown ids, closing a closed issue, a parent that is the issue itself, a parent cycle, a closed parent, and closing an issue with open dependents are refused. Any refusal stops the run before the first write. |
 | Undo file first | The undo file is written before the first `bd` write. It is itself a decisions file: `embeadify undo FILE --apply`. |
 | Drift check | Just before writing, a second snapshot is compared; an op whose issue changed since validation is skipped and reported. |
+| Held beads | `close`, `dup`, `priority` and `status` on a bead in progress with an assignee are flagged in the dry run and skipped on `--apply` unless `--allow-held`. |
 | Failures never hide | A failed op never aborts the batch, is listed with the exact `bd` retry command, and makes the exit code non-zero. |
 | Bounded parallelism | `-j N` workers (default 2, hard maximum 8; above 2 prints a note, since parallel writes load the shared beads server). Each worker runs a plain `bd` subprocess. |
 | Honors `bd` guards | Your environment (`BEADS_DOLT_*` and friends) is passed to `bd` unchanged. A guard refusal is shown, never bypassed, never retried. |

@@ -22,14 +22,14 @@ class State:
     title: str = ""
     comment_count: int | None = None
     markers: set[str] = field(default_factory=set)  # `candidate:ID` / `provenance:ID`
-    assignee: str = ""  # who holds it (the scribe's owner-routing guards read this, never write it)
+    assignee: str = ""  # who holds it (the `assign` op and the held guards read this)
     issue_type: str = ""
     notes: str = ""  # capped: the guards only look for phrases such as "close only on prod evidence"
     description: str = ""  # capped, same reason
     owner_summary: str = ""  # bead metadata key `owner_summary`, READ ONLY context (capped at 400)
 
     def watch(self) -> tuple:
-        return (self.status, self.parent, self.priority, tuple(sorted(self.labels)))
+        return (self.status, self.parent, self.priority, tuple(sorted(self.labels)), self.assignee)
 
 
 Snapshot = dict[str, State]
@@ -114,6 +114,11 @@ def open_dependents(snap: Snapshot, ident: str) -> list[str]:
         for s in snap.values()
         if s.status != "closed" and s.id != ident and (s.parent == ident or ident in s.blocks)
     )
+
+
+def is_held(state: State) -> bool:
+    """In progress with an assignee: someone is working it now."""
+    return state.status == "in_progress" and bool(state.assignee)
 
 
 def any_dependents(snap: Snapshot, ident: str) -> bool:

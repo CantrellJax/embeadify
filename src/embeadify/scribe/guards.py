@@ -80,7 +80,7 @@ def target_hits(c: dict, rec: Recommendation, state: snapshot.State, policy: Pol
         state.title, policy.sensitive_keywords
     ):
         hits.append("sensitive_target")
-    if state.status == "in_progress" and state.assignee:
+    if snapshot.is_held(state):
         hits.append("claimed_target")
     if _label_set(state.labels) & _label_set(policy.owner_labels) or state.issue_type in policy.owner_types:
         hits.append("owner_held_target")
